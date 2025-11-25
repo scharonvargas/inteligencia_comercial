@@ -15,7 +15,9 @@
     "react": "^19.2.0",
     "recharts": "^3.5.0",
     "leaflet": "1.9.4",
-    "react-leaflet": "4.2.1"
+    "react-leaflet": "4.2.1",
+    "react-window": "1.8.10",
+    "@supabase/supabase-js": "2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

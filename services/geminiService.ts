@@ -65,10 +65,18 @@ function cleanAndParseJSON(text: string): any[] {
     }
   }
 
+  // TENTATIVA 1: Parse direto (Preserva URLs corretamente se o JSON for válido)
+  try {
+    const result = JSON.parse(cleanText);
+    return Array.isArray(result) ? result : [];
+  } catch (e) {
+    // Se falhar, continua para a limpeza agressiva
+  }
+
   // 3. Limpeza de erros comuns de sintaxe JSON gerados por LLMs
   cleanText = cleanText
-    // Remove comentários //
-    .replace(/\/\/.*$/gm, '') 
+    // Remove comentários //, mas ignora URLs (http://) usando lookbehind negativo para ':'
+    .replace(/(?<!:)\/\/.*$/gm, '') 
     // Remove vírgulas trailing (vírgula antes de fechar } ou ])
     .replace(/,(\s*[}\]])/g, '$1')
     // Remove caracteres de controle invisíveis
@@ -142,6 +150,17 @@ export const fetchAndAnalyzeBusinesses = async (
     return searchCache.get(cacheKey)!;
   }
 
+  // 2. Pré-carregar prospects do banco para verificação rápida
+  onProgress("Sincronizando banco de dados de prospects...");
+  let existingProspectsMap = new Set<string>();
+  try {
+    const prospects = await dbService.getAllProspects();
+    // Cria um Set de assinaturas "nome|endereço" para busca O(1)
+    prospects.forEach(p => existingProspectsMap.add(`${p.name.toLowerCase()}|${p.address.toLowerCase()}`));
+  } catch (e) {
+    console.warn("Não foi possível carregar prospects do banco:", e);
+  }
+
   const BATCH_SIZE = 20;
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
@@ -192,10 +211,9 @@ export const fetchAndAnalyzeBusinesses = async (
       
       5. INVESTIGAÇÃO PROFUNDA DE ATIVIDADE (Crucial):
          - Vasculhe snippets de redes sociais (Instagram, LinkedIn, Facebook).
-         - Procure por datas exatas de postagens recentes.
+         - Procure por DATAS EXATAS de postagens recentes (Ex: "12/10/2024").
          - Identifique o TIPO de conteúdo (ex: "Post sobre evento", "Oferta de emprego", "Mudança de cardápio", "Resposta a review").
-         - Se houver blog/notícias, cite o título do último artigo.
-         - Se houver horário de funcionamento atualizado recentemente, cite.
+         - Se houver reviews recentes no Google Maps, cite a data do último review.
       
       6. FILTRE: Apenas negócios operantes.
       7. CLASSIFIQUE a categoria específica.
@@ -246,7 +264,9 @@ export const fetchAndAnalyzeBusinesses = async (
            
            const address = item.address || "Endereço Desconhecido";
            const name = item.name || "Nome Desconhecido";
-           const isSaved = dbService.checkIsProspect(name, address);
+           
+           // Verifica se é prospect usando o Map pré-carregado
+           const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
            
            // Gerar link de whatsapp se possível
            const whatsappLink = getWhatsAppUrl(item.phone, name);
