@@ -3,8 +3,13 @@ import { fetchAndAnalyzeBusinesses } from './services/geminiService';
 import { BusinessEntity } from './types';
 import { ResultsTable } from './components/ResultsTable';
 import { ResultsMap } from './components/ResultsMap';
+import { KanbanBoard } from './components/KanbanBoard';
 import { AddressAutocomplete } from './components/AddressAutocomplete';
-import { Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info } from 'lucide-react';
+import { dbService } from './services/dbService';
+import { 
+  Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info, 
+  LayoutList, KanbanSquare 
+} from 'lucide-react';
 
 const STORAGE_KEYS = {
   SEGMENT: 'vericorp_last_segment',
@@ -26,16 +31,29 @@ const App: React.FC = () => {
   const [results, setResults] = useState<BusinessEntity[]>([]);
   const [error, setError] = useState<string | null>(null);
   
-  const hasKey = !!process.env.API_KEY;
+  // Controle de Visualização
+  const [viewMode, setViewMode] = useState<'table' | 'kanban'>('table');
   
-  // Modo Varredura ativa se não houver segmento digitado
+  // Status do Banco de Dados
+  const [dbStatus, setDbStatus] = useState<'loading' | 'online' | 'offline'>('loading');
+
+  const hasKey = !!process.env.API_KEY;
   const isSweepMode = segment.trim() === '';
+
+  // Verificar conexão com BD ao iniciar
+  useEffect(() => {
+    const checkDb = async () => {
+       const isConnected = await dbService.testConnection();
+       setDbStatus(isConnected ? 'online' : 'offline');
+    };
+    checkDb();
+  }, []);
 
   const handleSearch = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!region) return;
 
-    // Persistir parâmetros atuais no localStorage
+    // Persistir parâmetros
     localStorage.setItem(STORAGE_KEYS.SEGMENT, segment);
     localStorage.setItem(STORAGE_KEYS.REGION, region);
     localStorage.setItem(STORAGE_KEYS.MAX_RESULTS,String(maxResults));
@@ -52,9 +70,8 @@ const App: React.FC = () => {
 
     setIsLoading(true);
     setError(null);
-    setResults([]);
+    setResults([]); // Limpa resultados anteriores para começar do zero
     
-    // Análise de Intenção da Região para Feedback ao Usuário
     const regionLower = region.toLowerCase();
     const isStreetLevel = /rua|av\.|avenida|travessa|alameda|rodovia|estrada/i.test(regionLower);
     const isNeighborhoodLevel = /bairro|jardim|centro|vila|parque/i.test(regionLower);
@@ -67,14 +84,26 @@ const App: React.FC = () => {
     } else {
       initMsg = `Inicializando busca segmentada por "${segment}"...`;
     }
-    
     setProgressMsg(initMsg);
 
     try {
       const searchSegment = isSweepMode ? "Varredura Geral (Multisetorial)" : segment;
-      // A lógica interna do geminiService já usa o prompt para priorizar ruas/bairros se presentes na string 'region'
-      const data = await fetchAndAnalyzeBusinesses(searchSegment, region, maxResults, (msg) => setProgressMsg(msg));
-      setResults(data);
+      
+      // STREAMING: Passamos um callback extra para receber lotes de dados
+      await fetchAndAnalyzeBusinesses(
+        searchSegment, 
+        region, 
+        maxResults, 
+        (msg) => setProgressMsg(msg),
+        (newBatch) => {
+           // Callback executado a cada lote encontrado
+           setResults(prev => [...prev, ...newBatch]);
+        }
+      );
+      
+      // Nota: fetchAndAnalyzeBusinesses retorna o array completo no final, 
+      // mas já fomos atualizando o estado via callback, então não precisamos setar de novo aqui
+      // a menos que queiramos garantir sincronia total.
     } catch (err: any) {
       setError(err.message || "Ocorreu um erro inesperado.");
     } finally {
@@ -83,8 +112,19 @@ const App: React.FC = () => {
     }
   }, [segment, region, maxResults, hasKey, isSweepMode]);
 
+  // Handler para atualizar o estágio no Kanban (e refletir na lista principal)
+  const handlePipelineChange = useCallback(async (businessId: string, newStage: string) => {
+    // 1. Atualiza UI localmente
+    setResults(prev => prev.map(b => 
+      b.id === businessId ? { ...b, pipelineStage: newStage } : b
+    ));
+    
+    // 2. Persiste no BD
+    await dbService.updatePipelineStage(businessId, newStage);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-500/30">
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-500/30 flex flex-col">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
@@ -92,32 +132,57 @@ const App: React.FC = () => {
             <Radar size={28} />
             <h1 className="text-xl font-bold tracking-tight text-white">VeriCorp <span className="text-slate-500 font-normal">| AI Scout</span></h1>
           </div>
-          <div className="text-xs text-slate-500 hidden md:block">
-            Powered by Google Gemini 2.5 Flash
+          <div className="flex items-center gap-4">
+             {/* View Toggle */}
+             {results.length > 0 && (
+               <div className="bg-slate-800 p-1 rounded-lg flex border border-slate-700">
+                  <button 
+                    onClick={() => setViewMode('table')}
+                    className={`p-1.5 rounded transition-colors ${viewMode === 'table' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                    title="Visualização em Lista"
+                  >
+                    <LayoutList size={18} />
+                  </button>
+                  <button 
+                    onClick={() => setViewMode('kanban')}
+                    className={`p-1.5 rounded transition-colors ${viewMode === 'kanban' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                    title="Visualização Kanban"
+                  >
+                    <KanbanSquare size={18} />
+                  </button>
+               </div>
+             )}
+             <div className="text-xs text-slate-500 hidden md:block">
+              Gemini 2.5 Flash
+             </div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="max-w-7xl mx-auto px-4 py-8 flex-grow w-full">
         
         {/* Intro / Search Section */}
-        <section className="max-w-5xl mx-auto mb-12 text-center">
-          <h2 className="text-3xl md:text-4xl font-extrabold text-white mb-4">
-            Inteligência Comercial Automatizada
-          </h2>
-          <p className="text-slate-400 mb-8 text-lg">
-            Encontre, verifique e filtre leads de negócios usando verificação em tempo real e análise de NLP.
-          </p>
+        <section className="max-w-5xl mx-auto mb-8 text-center">
+          {results.length === 0 && !isLoading && (
+            <>
+              <h2 className="text-3xl md:text-4xl font-extrabold text-white mb-4">
+                Inteligência Comercial Automatizada
+              </h2>
+              <p className="text-slate-400 mb-8 text-lg">
+                Encontre, verifique e filtre leads de negócios usando verificação em tempo real e análise de NLP.
+              </p>
+            </>
+          )}
 
           {!hasKey && (
              <div className="mb-6 p-4 bg-amber-900/20 border border-amber-500/50 text-amber-200 rounded-lg text-sm flex items-center justify-center gap-2">
                  <Key size={16} />
-                 <span>Chave API necessária. Configure seu ambiente ou use o seletor de faturamento se disponível.</span>
+                 <span>Chave API necessária.</span>
              </div>
           )}
 
           {/* Form Container */}
-          <form onSubmit={handleSearch} className="bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl relative z-10">
+          <form onSubmit={handleSearch} className="bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl relative z-10 mx-auto w-full">
             <div className="grid grid-cols-1 md:grid-cols-[1.5fr_1px_1.5fr_1px_auto_auto] gap-3 md:gap-0 items-center">
                
                {/* Input: Segmento */}
@@ -145,7 +210,7 @@ const App: React.FC = () => {
                {/* Divider Desktop */}
                <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
 
-               {/* Input: Região (AGORA COM AUTOCOMPLETE) */}
+               {/* Input: Região */}
                <div className="relative group w-full">
                   <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors z-10" size={20} />
                   <AddressAutocomplete 
@@ -190,56 +255,46 @@ const App: React.FC = () => {
                  } disabled:opacity-50 disabled:cursor-not-allowed`}
                >
                  {isLoading ? <Loader2 className="animate-spin" size={20} /> : (isSweepMode ? <Globe2 size={20} /> : <Search size={20} />)}
-                 {isLoading ? 'Buscando...' : (isSweepMode ? 'Escanear Área' : 'Buscar')}
+                 {isLoading ? 'Buscando...' : (isSweepMode ? 'Escanear' : 'Buscar')}
                </button>
             </div>
           </form>
 
-          {/* Guia de Dicas de Pesquisa */}
-          <div className="mt-6 flex flex-col items-center animate-fadeIn">
-            <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4 max-w-2xl w-full text-left backdrop-blur-sm">
-               <div className="flex items-center gap-2 text-brand-400 mb-2 font-semibold">
-                  <Lightbulb size={16} className={isSweepMode ? "text-emerald-400" : "text-brand-400"} />
-                  <span className={isSweepMode ? "text-emerald-400" : "text-brand-400"}>
-                     Como obter os melhores resultados {isSweepMode ? "na Varredura" : "na Busca"}
-                  </span>
-               </div>
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs md:text-sm text-slate-400">
-                  <div className="space-y-2">
-                     <p className="flex items-start gap-2">
-                       <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
-                       {isSweepMode 
-                         ? <span><strong>Especifique a via:</strong> Digite "Rua X" ou "Av. Y" para listar todas as lojas lado a lado naquela rua.</span>
-                         : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais" ou "Escritórios de Advocacia".</span>
-                       }
-                     </p>
-                     <p className="flex items-start gap-2">
-                       <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">2</span>
-                       {isSweepMode 
-                         ? <span><strong>Use o Bairro:</strong> Digite "Bairro Centro, Cidade" para mapear os principais pontos comerciais da zona.</span>
-                         : <span><strong>Combine com nicho:</strong> Use "Clínicas Odontológicas no Bairro X" para precisão cirúrgica.</span>
-                       }
-                     </p>
-                  </div>
-                  <div className="space-y-2 border-l border-slate-800 pl-4 md:pl-4">
-                     <p className="flex items-start gap-2">
-                        <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
-                        <span>A IA analisa a <strong>atualidade</strong> dos dados. Negócios sem rastros digitais recentes podem ser filtrados.</span>
-                     </p>
-                     <p className="flex items-start gap-2">
-                        <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
-                        <span>Inclua sempre a <strong>Cidade/UF</strong> para evitar homônimos (Ex: "Centro, Campinas" vs "Centro, Rio").</span>
-                     </p>
-                  </div>
-               </div>
+          {/* Dicas de Busca (Só aparece se não houver resultados) */}
+          {results.length === 0 && !isLoading && (
+            <div className="mt-6 flex flex-col items-center animate-fadeIn">
+                <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4 max-w-2xl w-full text-left backdrop-blur-sm">
+                   <div className="flex items-center gap-2 text-brand-400 mb-2 font-semibold">
+                      <Lightbulb size={16} className={isSweepMode ? "text-emerald-400" : "text-brand-400"} />
+                      <span className={isSweepMode ? "text-emerald-400" : "text-brand-400"}>
+                         Dicas para {isSweepMode ? "Varredura" : "Busca"}
+                      </span>
+                   </div>
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs md:text-sm text-slate-400">
+                      <div className="space-y-2">
+                         <p className="flex items-start gap-2">
+                           <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
+                           {isSweepMode 
+                             ? <span><strong>Especifique a via:</strong> Digite "Rua X" ou "Av. Y" para listar todas as lojas lado a lado naquela rua.</span>
+                             : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais".</span>
+                           }
+                         </p>
+                      </div>
+                      <div className="space-y-2 border-l border-slate-800 pl-4">
+                         <p className="flex items-start gap-2">
+                            <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
+                            <span>A IA prioriza empresas com <strong>rastros digitais recentes</strong>.</span>
+                         </p>
+                      </div>
+                   </div>
+                </div>
             </div>
-          </div>
-
+          )}
         </section>
 
         {/* Error Display */}
         {error && (
-          <div className="max-w-3xl mx-auto mb-8 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200 flex items-start gap-3">
+          <div className="max-w-3xl mx-auto mb-8 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200 flex items-start gap-3 animate-fadeIn">
              <div className="mt-1"><AlertIcon /></div>
              <div>
                <h3 className="font-bold">A busca falhou</h3>
@@ -248,27 +303,20 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Progress Console */}
+        {/* Progress Console (Sticky or Floating) */}
         {isLoading && (
-          <div className="max-w-2xl mx-auto mb-12">
-            <div className="bg-slate-900 rounded-lg border border-slate-700 p-6 font-mono text-sm shadow-inner">
-               <div className="flex items-center gap-3 text-brand-400 mb-2">
-                 <span className="relative flex h-3 w-3">
-                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-75"></span>
-                   <span className="relative inline-flex rounded-full h-3 w-3 bg-brand-500"></span>
-                 </span>
-                 STATUS_AGENTE: ATIVO
+          <div className="max-w-2xl mx-auto mb-8 animate-fadeIn">
+            <div className="bg-slate-900 rounded-lg border border-slate-700 p-4 font-mono text-sm shadow-inner flex flex-col gap-2">
+               <div className="flex items-center justify-between text-brand-400">
+                 <div className="flex items-center gap-2">
+                    <Loader2 className="animate-spin" size={16} />
+                    <span>PROCESSANDO_DADOS...</span>
+                 </div>
+                 <span className="text-slate-500 text-xs">{results.length} resultados encontrados</span>
                </div>
-               <div className="space-y-1 text-slate-400">
-                  <p>{`> Modo: ${isSweepMode ? 'Varredura Geográfica (Broad Scan)' : 'Busca Segmentada'}`}</p>
-                  <p>{`> Segmento: ${segment || 'MULTIPLE_SECTORS'}`}</p>
-                  <p>{`> Região: ${region}`}</p>
-                  <p>{`> Meta: ${maxResults} resultados`}</p>
-                  <p className="text-slate-200 animate-pulse mt-2">{`> ${progressMsg}`}</p>
-               </div>
-               {/* Simple visual progress bar simulation */}
-               <div className="w-full bg-slate-800 rounded-full h-1.5 mt-4 overflow-hidden">
-                 <div className="bg-brand-500 h-1.5 rounded-full animate-progress"></div>
+               <p className="text-slate-300">{`> ${progressMsg}`}</p>
+               <div className="w-full bg-slate-800 rounded-full h-1 mt-1 overflow-hidden">
+                 <div className="bg-brand-500 h-1 rounded-full animate-progress"></div>
                </div>
             </div>
           </div>
@@ -276,17 +324,32 @@ const App: React.FC = () => {
 
         {/* Results Section */}
         {results.length > 0 && (
-          <div className="animate-slideUp">
+          <div className="animate-slideUp space-y-6 w-full">
+             
+             {/* Map Component */}
              <ResultsMap data={results} />
-             <ResultsTable data={results} />
+             
+             {/* Toggle View Components */}
+             {viewMode === 'table' ? (
+                <ResultsTable data={results} />
+             ) : (
+                <KanbanBoard data={results} onStageChange={handlePipelineChange} />
+             )}
           </div>
         )}
 
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800 bg-slate-900 mt-auto py-8 text-center text-slate-500 text-sm">
+      <footer className="border-t border-slate-800 bg-slate-900 mt-auto py-4 text-center text-slate-500 text-xs flex justify-between px-8">
         <p>&copy; {new Date().getFullYear()} VeriCorp. Inteligência gerada por IA.</p>
+        <div className="flex items-center gap-2">
+          <span>Status BD:</span>
+          <span className={`flex items-center gap-1 ${dbStatus === 'online' ? 'text-emerald-500' : dbStatus === 'loading' ? 'text-slate-500' : 'text-amber-500'}`}>
+             <div className={`w-2 h-2 rounded-full ${dbStatus === 'online' ? 'bg-emerald-500' : dbStatus === 'loading' ? 'bg-slate-500' : 'bg-amber-500'}`} />
+             {dbStatus === 'online' ? 'Online (Supabase)' : dbStatus === 'loading' ? 'Verificando...' : 'Modo Offline (Local)'}
+          </span>
+        </div>
       </footer>
     </div>
   );

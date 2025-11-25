@@ -38,56 +38,82 @@ function getWhatsAppUrl(phone: string | null, companyName: string): string | nul
 }
 
 /**
- * Parser JSON Robusto
- * Tenta limpar e corrigir a string retornada pela IA antes de fazer o parse.
+ * Parser JSON Robusto v2
+ * Protege URLs antes de limpar comentários e corrige estruturas JSON malformadas comuns de LLMs.
  */
 function cleanAndParseJSON(text: string): any[] {
+  // 1. Tratamento de Input Vazio/Inválido
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    return [];
+  }
+
   let cleanText = text;
 
-  // 1. Extrair conteúdo de blocos de código Markdown (```json ... ```)
+  // 2. Extrair conteúdo de blocos de código Markdown (```json ... ```) se existirem
   const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (markdownMatch && markdownMatch[1]) {
     cleanText = markdownMatch[1];
   }
 
-  // 2. Encontrar o array JSON mais externo
+  // 3. Isolar a estrutura de dados (encontrar o primeiro [ ou { e o último ] ou })
   const firstBracket = cleanText.indexOf('[');
-  const lastBracket = cleanText.lastIndexOf(']');
+  const firstBrace = cleanText.indexOf('{');
   
-  if (firstBracket !== -1 && lastBracket !== -1) {
-    cleanText = cleanText.substring(firstBracket, lastBracket + 1);
+  let startIdx = -1;
+  let endIdx = -1;
+  let isArray = true;
+
+  // Determina onde começa o JSON
+  if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+      startIdx = firstBracket;
+      endIdx = cleanText.lastIndexOf(']');
+      isArray = true;
+  } else if (firstBrace !== -1) {
+      startIdx = firstBrace;
+      endIdx = cleanText.lastIndexOf('}');
+      isArray = false;
+  }
+
+  if (startIdx !== -1 && endIdx !== -1) {
+      cleanText = cleanText.substring(startIdx, endIdx + 1);
+      
+      // Se detectou objetos soltos (ex: {...} {...}), força array e vírgulas
+      if (!isArray) {
+          // Substitui "}{" por "},{" para corrigir múltiplos objetos sem array
+          cleanText = `[${cleanText.replace(/}\s*{/g, '},{')}]`;
+      }
   } else {
-    // Se não achar array, tenta achar objeto único e colocar num array
-    const firstBrace = cleanText.indexOf('{');
-    const lastBrace = cleanText.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1) {
-       cleanText = `[${cleanText.substring(firstBrace, lastBrace + 1)}]`;
-    }
+      // Se não encontrou estrutura JSON, retorna vazio sem erro (provavelmente texto de recusa da IA)
+      return [];
   }
 
-  // TENTATIVA 1: Parse direto (Preserva URLs corretamente se o JSON for válido)
+  // TENTATIVA 1: Parse direto (Otimista)
   try {
     const result = JSON.parse(cleanText);
-    return Array.isArray(result) ? result : [];
+    return Array.isArray(result) ? result : [result];
   } catch (e) {
-    // Se falhar, continua para a limpeza agressiva
+    // Falhou? Vamos limpar.
   }
 
-  // 3. Limpeza de erros comuns de sintaxe JSON gerados por LLMs
-  cleanText = cleanText
-    // Remove comentários //, mas ignora URLs (http://) usando lookbehind negativo para ':'
-    .replace(/(?<!:)\/\/.*$/gm, '') 
-    // Remove vírgulas trailing (vírgula antes de fechar } ou ])
-    .replace(/,(\s*[}\]])/g, '$1')
-    // Remove caracteres de controle invisíveis
-    .replace(/[\x00-\x1F\x7F-\x9F]/g, ""); 
+  // 4. Limpeza Avançada
+  // Passo A: Proteger URLs substituindo :// por um token seguro (evita que o limpador de comentários quebre links)
+  const protectedText = cleanText.replace(/:\/\//g, '__CSS__');
 
+  // Passo B: Remover comentários de linha (agora seguro para URLs) e vírgulas sobrando
+  let sanitized = protectedText
+    .replace(/\/\/.*$/gm, '') // Remove // até o fim da linha
+    .replace(/,(\s*[}\]])/g, '$1') // Remove vírgula antes de fechar } ou ]
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, ""); // Remove caracteres de controle
+
+  // Passo C: Restaurar URLs
+  sanitized = sanitized.replace(/__CSS__/g, '://');
+
+  // TENTATIVA 2: Parse do texto sanitizado
   try {
-    const result = JSON.parse(cleanText);
-    return Array.isArray(result) ? result : [];
+    const result = JSON.parse(sanitized);
+    return Array.isArray(result) ? result : [result];
   } catch (e) {
-    console.error("Falha crítica ao analisar JSON. Texto bruto:", text);
-    console.error("Texto limpo tentado:", cleanText);
+    console.error("Falha ao analisar JSON mesmo após sanitização.", e);
     return [];
   }
 }
@@ -136,7 +162,8 @@ export const fetchAndAnalyzeBusinesses = async (
   segment: string,
   region: string,
   maxResults: number,
-  onProgress: (msg: string) => void
+  onProgress: (msg: string) => void,
+  onBatchResults: (results: BusinessEntity[]) => void // Novo callback para streaming
 ): Promise<BusinessEntity[]> => {
   if (!apiKey) {
     throw new Error("A chave da API está ausente. Selecione um projeto Google Cloud válido com faturamento ativado.");
@@ -146,8 +173,11 @@ export const fetchAndAnalyzeBusinesses = async (
   const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}`;
   if (searchCache.has(cacheKey)) {
     onProgress("Recuperando resultados do cache instantâneo...");
-    await wait(600); // Pequeno delay UX
-    return searchCache.get(cacheKey)!;
+    const cachedData = searchCache.get(cacheKey)!;
+    await wait(300); // Pequeno delay UX
+    // Emite os dados do cache de uma vez
+    onBatchResults(cachedData);
+    return cachedData;
   }
 
   // 2. Pré-carregar prospects do banco para verificação rápida
@@ -165,12 +195,12 @@ export const fetchAndAnalyzeBusinesses = async (
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
   let attempts = 0;
-  // Limite de segurança para evitar loops infinitos se a IA retornar poucos resultados
-  const maxLoops = Math.ceil(maxResults / BATCH_SIZE) + 3; 
+  // Limite de segurança para evitar loops infinitos
+  const maxLoops = Math.ceil(maxResults / BATCH_SIZE) + 4; 
 
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
-  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'} em "${region}" para meta de ${maxResults} empresas...`);
+  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}...`);
   
   const modelId = "gemini-2.5-flash";
 
@@ -183,7 +213,7 @@ export const fetchAndAnalyzeBusinesses = async (
     // Lista de exclusão para evitar duplicatas (context window management)
     const exclusionList = Array.from(seenNames).slice(-40).join(", ");
 
-    onProgress(`Executando lote ${attempts}/${Math.ceil(maxResults/BATCH_SIZE)}: Buscando ${currentBatchSize} empresas (Total acumulado: ${allEntities.length})...`);
+    onProgress(`Buscando lote ${attempts} (Encontrados: ${allEntities.length}/${maxResults})...`);
 
     let promptTask = "";
     if (isBroadSearch) {
@@ -241,20 +271,20 @@ export const fetchAndAnalyzeBusinesses = async (
     `;
 
     try {
-      // Usa a função com retry ao invés de chamar direto
       const response = await generateContentWithRetry(modelId, prompt, isBroadSearch);
 
       const rawText = response.text || "";
       const batchData = cleanAndParseJSON(rawText);
 
       if (!batchData || batchData.length === 0) {
-        onProgress("IA não retornou dados estruturados neste lote. Tentando ajustar...");
-        // Se falhar o parse, tenta continuar o loop ao invés de quebrar tudo
+        onProgress("IA processando dados... (Tentando rotas alternativas)");
         if (attempts >= maxLoops) break;
         continue;
       }
 
+      const batchEntities: BusinessEntity[] = [];
       let newCount = 0;
+
       for (const item of batchData) {
         const normalizedName = (item.name || "").toLowerCase().trim();
         
@@ -265,19 +295,19 @@ export const fetchAndAnalyzeBusinesses = async (
            const address = item.address || "Endereço Desconhecido";
            const name = item.name || "Nome Desconhecido";
            
-           // Verifica se é prospect usando o Map pré-carregado
+           // Verifica se é prospect
            const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
            
-           // Gerar link de whatsapp se possível
+           // Gerar link de whatsapp
            const whatsappLink = getWhatsAppUrl(item.phone, name);
            const finalSocialLinks = Array.isArray(item.socialLinks) ? item.socialLinks : [];
            
            if (whatsappLink) {
-             finalSocialLinks.unshift(whatsappLink); // Adiciona wa.me como primeiro link social se existir
+             finalSocialLinks.unshift(whatsappLink);
            }
 
-           allEntities.push({
-            id: `biz-${Date.now()}-${allEntities.length}`,
+           const entity: BusinessEntity = {
+            id: `biz-${Date.now()}-${allEntities.length + newCount}`,
             name: name,
             address: address,
             phone: item.phone || null,
@@ -291,34 +321,41 @@ export const fetchAndAnalyzeBusinesses = async (
             lat: typeof item.lat === 'number' ? item.lat : undefined,
             lng: typeof item.lng === 'number' ? item.lng : undefined,
             isProspect: isSaved,
-            pipelineStage: 'new' // Default stage
-          });
+            pipelineStage: 'new'
+          };
+          
+          batchEntities.push(entity);
         }
       }
 
-      // Se a IA começar a rodar em círculos (só duplicatas), paramos.
+      // STREAMING: Enviar resultados deste lote IMEDIATAMENTE para a UI
+      if (batchEntities.length > 0) {
+        allEntities.push(...batchEntities);
+        onBatchResults(batchEntities); // Callback para App.tsx
+      }
+
       if (newCount === 0 && attempts > 1) {
-        onProgress("Limite de novidade atingido na região. Encerrando.");
+        onProgress("Varredura local concluída.");
         break;
       }
       
-      // Delay tático entre lotes para evitar "Too Many Requests" em bursts longos
-      await wait(1000);
+      await wait(500); // Delay reduzido para streaming mais fluido
 
     } catch (error: any) {
-      console.warn(`Erro fatal no lote ${attempts}:`, error);
-      // Se já temos alguns dados, retornamos o que tem. Se não, erro.
+      console.warn(`Erro no lote ${attempts}:`, error);
       if (allEntities.length > 0) {
-        onProgress("Conexão instável, retornando dados parciais...");
+        onProgress("Finalizando com dados parciais...");
         break; 
       }
-      throw new Error("Não foi possível conectar à Inteligência Artificial. Verifique sua chave API ou tente novamente em instantes.");
+      // Se falhar tudo no primeiro lote, lança erro
+      if (allEntities.length === 0 && attempts === 1) {
+          throw new Error("Não foi possível conectar à Inteligência Artificial. Verifique sua chave API ou tente novamente.");
+      }
     }
   }
 
-  onProgress(`Processamento concluído. ${allEntities.length} empresas encontradas.`);
+  onProgress(`Concluído! ${allEntities.length} empresas encontradas.`);
   
-  // Salva no cache antes de retornar
   if (allEntities.length > 0) {
     searchCache.set(cacheKey, allEntities);
   }

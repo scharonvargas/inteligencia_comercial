@@ -34,7 +34,8 @@ const getSocialIcon = (url: string) => {
   return <ExternalLink size={16} />;
 };
 
-// --- Memoized Row Component for Performance ---
+// --- Memoized Row Component ---
+// Critical for performance when list grows during streaming
 interface BusinessRowProps {
   biz: BusinessEntity;
   isExpanded: boolean;
@@ -89,7 +90,6 @@ const BusinessRow = React.memo(({
               <div className="flex items-center gap-2 group/phone">
                 <Phone size={12} className="text-slate-500" />
                 <span>{biz.phone}</span>
-                {/* Botão de WhatsApp Rápido na Célula */}
                 <a 
                   href={`https://wa.me/${biz.phone.replace(/\D/g,'')}?text=Olá, encontrei a ${encodeURIComponent(biz.name)} e gostaria de mais informações.`}
                   target="_blank"
@@ -130,9 +130,7 @@ const BusinessRow = React.memo(({
           <td colSpan={7} className="p-0">
             <div className="p-6 border-l-2 border-brand-500 ml-4 md:ml-0">
               
-              {/* Top Grid Info */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                {/* Col 1: Activity Details */}
                 <div className="space-y-3">
                   <h4 className="text-sm font-semibold text-brand-400 uppercase tracking-wide flex items-center gap-2">
                     <Activity size={16} /> Detalhes de Atividade
@@ -146,7 +144,6 @@ const BusinessRow = React.memo(({
                   </div>
                 </div>
 
-                {/* Col 2: Social & Web */}
                 <div className="space-y-3">
                   <h4 className="text-sm font-semibold text-brand-400 uppercase tracking-wide flex items-center gap-2">
                     <Globe size={16} /> Presença Digital
@@ -172,7 +169,6 @@ const BusinessRow = React.memo(({
                   )}
                 </div>
 
-                {/* Col 3: Website Preview Card */}
                 <div className="space-y-3">
                   <h4 className="text-sm font-semibold text-brand-400 uppercase tracking-wide">Website</h4>
                   {biz.website ? (
@@ -202,7 +198,6 @@ const BusinessRow = React.memo(({
                 </div>
               </div>
               
-              {/* Cold Email Generator Section */}
               <div className="bg-slate-800 rounded border border-slate-700 p-4">
                   <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <h4 className="text-sm font-semibold text-brand-400 uppercase tracking-wide flex items-center gap-2">
@@ -237,12 +232,12 @@ const BusinessRow = React.memo(({
                     </div>
                   ) : !loadingEmail && (
                     <p className="text-xs text-slate-500 italic">
-                      Clique em "Gerar Rascunho" para que a IA crie uma mensagem personalizada baseada nas evidências encontradas (última atividade, região, segmento).
+                      Clique em "Gerar Rascunho" para que a IA crie uma mensagem personalizada.
                     </p>
                   )}
                   {loadingEmail && (
                       <div className="py-4 text-center text-xs text-slate-400 animate-pulse">
-                        Analisando perfil da empresa e escrevendo copy...
+                        Analisando perfil...
                       </div>
                   )}
               </div>
@@ -254,7 +249,6 @@ const BusinessRow = React.memo(({
     </React.Fragment>
   );
 }, (prev, next) => {
-  // Custom comparison to optimize performance strictly
   return (
     prev.biz === next.biz && 
     prev.isExpanded === next.isExpanded &&
@@ -277,7 +271,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   const [loadingEmailId, setLoadingEmailId] = useState<string | null>(null);
   const [copiedEmailId, setCopiedEmailId] = useState<string | null>(null);
 
-  // Client-side pagination state
+  // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
@@ -285,28 +279,9 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     setLocalData(data);
   }, [data]);
 
-  // Reset page when filters or data change
-  useEffect(() => {
-    setCurrentPage(1);
-    setExpandedRowId(null);
-  }, [data.length, statusFilter, activityFilter]); // Optimize dependency
-
-  const toggleRow = useCallback((id: string) => {
-    setExpandedRowId(prev => prev === id ? null : id);
-  }, []);
-
-  const handleToggleProspect = useCallback(async (e: React.MouseEvent, business: BusinessEntity) => {
-    e.stopPropagation(); // Impede que a linha expanda ao clicar na estrela
-    
-    // Atualização otimista da UI
-    setLocalData(prev => prev.map(b => 
-      b.id === business.id ? { ...b, isProspect: !b.isProspect } : b
-    ));
-    
-    // Persistência no "DB"
-    await dbService.toggleProspect(business);
-  }, []);
-
+  // Performance Optimization: 
+  // Otimização crucial: O useMemo deve depender apenas dos filtros e dos dados.
+  // Isso evita recálculos se outros estados não relacionados mudarem.
   const filteredData = useMemo(() => {
     return localData.filter(d => {
       // Status Filter
@@ -324,13 +299,32 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     });
   }, [localData, statusFilter, activityFilter]);
 
-  // Calculate pagination
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   
+  // Reset de página inteligente: Só reseta se a página atual não existir mais.
+  // Isso permite que o usuário navegue enquanto os dados estão chegando (streaming).
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(1);
+    }
+  }, [totalPages, currentPage]);
+
   const paginatedData = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     return filteredData.slice(startIndex, startIndex + itemsPerPage);
   }, [filteredData, currentPage, itemsPerPage]);
+
+  const toggleRow = useCallback((id: string) => {
+    setExpandedRowId(prev => prev === id ? null : id);
+  }, []);
+
+  const handleToggleProspect = useCallback(async (e: React.MouseEvent, business: BusinessEntity) => {
+    e.stopPropagation();
+    setLocalData(prev => prev.map(b => 
+      b.id === business.id ? { ...b, isProspect: !b.isProspect } : b
+    ));
+    await dbService.toggleProspect(business);
+  }, []);
 
   const handleExportCSV = useCallback(() => {
     const headers = ["Nome", "Prospect", "Status", "Nota Confiabilidade", "Categoria", "Telefone", "Site", "Última Atividade (Evidência)", "Dias s/ Ativ.", "Endereço"];
@@ -376,10 +370,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
 
   return (
     <div className="w-full animate-fadeIn">
-      {/* Controles de Filtro e Exportação */}
+      {/* Controles */}
       <div className="flex flex-col gap-4 mb-4">
-        
-        {/* Linha superior: Filtros de Status e Botão Exportar */}
         <div className="flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0 custom-scrollbar">
             {['Todos', ...Object.values(BusinessStatus)].map(status => (
@@ -406,7 +398,6 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
           </button>
         </div>
 
-        {/* Linha inferior: Filtro de Recência */}
         <div className="flex items-center gap-2 text-sm text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800 w-fit">
           <Calendar size={16} />
           <span className="mr-2">Atividade Recente:</span>
@@ -428,8 +419,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-900/50 text-slate-400 text-sm uppercase tracking-wider sticky top-0 z-10">
-                <th className="p-4 w-10"></th> {/* Expand icon column */}
-                <th className="p-4 w-10 text-center"><Star size={16} /></th> {/* Prospect icon column */}
+                <th className="p-4 w-10"></th>
+                <th className="p-4 w-10 text-center"><Star size={16} /></th>
                 <th className="p-4 font-semibold">Empresa</th>
                 <th className="p-4 font-semibold">Status</th>
                 <th className="p-4 font-semibold">Contato</th>
@@ -464,7 +455,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
           </table>
         </div>
 
-        {/* Paginação Controles */}
+        {/* Paginação */}
         {filteredData.length > 0 && (
           <div className="border-t border-slate-700 bg-slate-900/30 p-4 flex items-center justify-between">
             <div className="text-sm text-slate-500">
@@ -483,7 +474,6 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
               <div className="flex items-center gap-1">
                 {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                   let pNum = i + 1;
-                  // Lógica de centralização da paginação
                   if (totalPages > 5) {
                      if (currentPage <= 3) pNum = i + 1;
                      else if (currentPage >= totalPages - 2) pNum = totalPages - 4 + i;
