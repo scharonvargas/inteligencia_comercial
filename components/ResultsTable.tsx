@@ -35,6 +35,14 @@ const getSocialIcon = (url: string) => {
   return <ExternalLink size={16} />;
 };
 
+const getHostname = (url: string) => {
+  try {
+    return new URL(url).hostname.replace('www.', '');
+  } catch {
+    return url;
+  }
+};
+
 // --- Memoized Row Component ---
 // Critical for performance when list grows during streaming
 interface BusinessRowProps {
@@ -173,7 +181,7 @@ const BusinessRow = React.memo(({
                           className="flex items-center gap-2 text-sm text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded transition-colors border border-slate-700"
                         >
                           {getSocialIcon(link)}
-                          <span className="truncate flex-1">{new URL(link).hostname}</span>
+                          <span className="truncate flex-1">{getHostname(link)}</span>
                           <ExternalLink size={12} className="opacity-50" />
                         </a>
                       ))}
