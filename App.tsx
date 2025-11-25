@@ -3,7 +3,8 @@ import { fetchAndAnalyzeBusinesses } from './services/geminiService';
 import { BusinessEntity } from './types';
 import { ResultsTable } from './components/ResultsTable';
 import { ResultsMap } from './components/ResultsMap';
-import { Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2 } from 'lucide-react';
+import { AddressAutocomplete } from './components/AddressAutocomplete';
+import { Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info } from 'lucide-react';
 
 const STORAGE_KEYS = {
   SEGMENT: 'vericorp_last_segment',
@@ -52,12 +53,26 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setResults([]);
-    setProgressMsg(isSweepMode 
-      ? "Iniciando varredura geográfica de múltiplos setores..." 
-      : "Inicializando protocolo de busca segmentada...");
+    
+    // Análise de Intenção da Região para Feedback ao Usuário
+    const regionLower = region.toLowerCase();
+    const isStreetLevel = /rua|av\.|avenida|travessa|alameda|rodovia|estrada/i.test(regionLower);
+    const isNeighborhoodLevel = /bairro|jardim|centro|vila|parque/i.test(regionLower);
+    
+    let initMsg = "";
+    if (isSweepMode) {
+      if (isStreetLevel) initMsg = "Iniciando varredura de alta precisão na via especificada...";
+      else if (isNeighborhoodLevel) initMsg = "Mapeando ecossistema comercial do bairro...";
+      else initMsg = "Iniciando varredura geográfica ampla...";
+    } else {
+      initMsg = `Inicializando busca segmentada por "${segment}"...`;
+    }
+    
+    setProgressMsg(initMsg);
 
     try {
       const searchSegment = isSweepMode ? "Varredura Geral (Multisetorial)" : segment;
+      // A lógica interna do geminiService já usa o prompt para priorizar ruas/bairros se presentes na string 'region'
       const data = await fetchAndAnalyzeBusinesses(searchSegment, region, maxResults, (msg) => setProgressMsg(msg));
       setResults(data);
     } catch (err: any) {
@@ -101,8 +116,8 @@ const App: React.FC = () => {
              </div>
           )}
 
-          {/* Form Container - Rebuilt for better alignment */}
-          <form onSubmit={handleSearch} className="bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl">
+          {/* Form Container */}
+          <form onSubmit={handleSearch} className="bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl relative z-10">
             <div className="grid grid-cols-1 md:grid-cols-[1.5fr_1px_1.5fr_1px_auto_auto] gap-3 md:gap-0 items-center">
                
                {/* Input: Segmento */}
@@ -130,16 +145,15 @@ const App: React.FC = () => {
                {/* Divider Desktop */}
                <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
 
-               {/* Input: Região */}
+               {/* Input: Região (AGORA COM AUTOCOMPLETE) */}
                <div className="relative group w-full">
-                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
-                  <input
-                    type="text"
+                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors z-10" size={20} />
+                  <AddressAutocomplete 
                     value={region}
-                    onChange={(e) => setRegion(e.target.value)}
+                    onChange={setRegion}
                     placeholder="Ex: Av. Paulista, SP ou Bairro Savassi"
-                    className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
                     disabled={isLoading}
+                    className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
                   />
                </div>
 
@@ -181,12 +195,46 @@ const App: React.FC = () => {
             </div>
           </form>
 
-          {isSweepMode && (
-            <p className="text-xs text-emerald-400/80 mt-3 flex items-center justify-center gap-1 animate-fadeIn">
-              <Globe2 size={12}/> 
-              <strong>Dica:</strong> Para melhores resultados na varredura, especifique o nome da Rua, Avenida ou o Bairro exato.
-            </p>
-          )}
+          {/* Guia de Dicas de Pesquisa */}
+          <div className="mt-6 flex flex-col items-center animate-fadeIn">
+            <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4 max-w-2xl w-full text-left backdrop-blur-sm">
+               <div className="flex items-center gap-2 text-brand-400 mb-2 font-semibold">
+                  <Lightbulb size={16} className={isSweepMode ? "text-emerald-400" : "text-brand-400"} />
+                  <span className={isSweepMode ? "text-emerald-400" : "text-brand-400"}>
+                     Como obter os melhores resultados {isSweepMode ? "na Varredura" : "na Busca"}
+                  </span>
+               </div>
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs md:text-sm text-slate-400">
+                  <div className="space-y-2">
+                     <p className="flex items-start gap-2">
+                       <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
+                       {isSweepMode 
+                         ? <span><strong>Especifique a via:</strong> Digite "Rua X" ou "Av. Y" para listar todas as lojas lado a lado naquela rua.</span>
+                         : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais" ou "Escritórios de Advocacia".</span>
+                       }
+                     </p>
+                     <p className="flex items-start gap-2">
+                       <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">2</span>
+                       {isSweepMode 
+                         ? <span><strong>Use o Bairro:</strong> Digite "Bairro Centro, Cidade" para mapear os principais pontos comerciais da zona.</span>
+                         : <span><strong>Combine com nicho:</strong> Use "Clínicas Odontológicas no Bairro X" para precisão cirúrgica.</span>
+                       }
+                     </p>
+                  </div>
+                  <div className="space-y-2 border-l border-slate-800 pl-4 md:pl-4">
+                     <p className="flex items-start gap-2">
+                        <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
+                        <span>A IA analisa a <strong>atualidade</strong> dos dados. Negócios sem rastros digitais recentes podem ser filtrados.</span>
+                     </p>
+                     <p className="flex items-start gap-2">
+                        <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
+                        <span>Inclua sempre a <strong>Cidade/UF</strong> para evitar homônimos (Ex: "Centro, Campinas" vs "Centro, Rio").</span>
+                     </p>
+                  </div>
+               </div>
+            </div>
+          </div>
+
         </section>
 
         {/* Error Display */}
