@@ -86,7 +86,7 @@ const App: React.FC = () => {
       <main className="max-w-7xl mx-auto px-4 py-8">
         
         {/* Intro / Search Section */}
-        <section className="max-w-4xl mx-auto mb-12 text-center">
+        <section className="max-w-5xl mx-auto mb-12 text-center">
           <h2 className="text-3xl md:text-4xl font-extrabold text-white mb-4">
             Inteligência Comercial Automatizada
           </h2>
@@ -101,70 +101,90 @@ const App: React.FC = () => {
              </div>
           )}
 
-          <form onSubmit={handleSearch} className="bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl flex flex-col md:flex-row gap-2 relative">
-             <div className="flex-[2] relative group">
-                {isSweepMode ? (
-                   <Globe2 className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-pulse" size={20} />
-                ) : (
-                   <Database className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
-                )}
-                <input
-                  type="text"
-                  value={segment}
-                  onChange={(e) => setSegment(e.target.value)}
-                  placeholder="Segmento (Vazio para Varredura Geral)"
-                  className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4"
-                  disabled={isLoading}
-                />
-                {isSweepMode && (
-                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase font-bold text-emerald-500 border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded">
-                    Modo Varredura
-                  </span>
-                )}
-             </div>
-             <div className="w-px bg-slate-800 hidden md:block"></div>
-             <div className="flex-[2] relative group">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
-                <input
-                  type="text"
-                  value={region}
-                  onChange={(e) => setRegion(e.target.value)}
-                  placeholder="Região (Bairro, Rua ou Cidade)"
-                  className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4"
-                  disabled={isLoading}
-                />
-             </div>
-             <div className="w-px bg-slate-800 hidden md:block"></div>
-             <div className="relative group md:w-40 bg-slate-800/50 md:bg-transparent rounded-lg md:rounded-none">
-                 <ListFilter className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
-                 <select 
-                    value={maxResults}
-                    onChange={(e) => setMaxResults(Number(e.target.value))}
-                    className="w-full bg-transparent border-none text-white focus:ring-0 h-12 pl-10 pr-2 appearance-none cursor-pointer"
+          {/* Form Container - Rebuilt for better alignment */}
+          <form onSubmit={handleSearch} className="bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl">
+            <div className="grid grid-cols-1 md:grid-cols-[1.5fr_1px_1.5fr_1px_auto_auto] gap-3 md:gap-0 items-center">
+               
+               {/* Input: Segmento */}
+               <div className="relative group w-full">
+                  {isSweepMode ? (
+                     <Globe2 className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-pulse" size={20} />
+                  ) : (
+                     <Database className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
+                  )}
+                  <input
+                    type="text"
+                    value={segment}
+                    onChange={(e) => setSegment(e.target.value)}
+                    placeholder="Segmento (Deixe vazio p/ Varredura)"
+                    className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
                     disabled={isLoading}
-                 >
-                    <option value={20} className="bg-slate-900">20 leads</option>
-                    <option value={50} className="bg-slate-900">50 leads</option>
-                    <option value={80} className="bg-slate-900">80 leads</option>
-                    <option value={100} className="bg-slate-900">100 leads</option>
-                 </select>
-             </div>
-             <button
-               type="submit"
-               disabled={isLoading || !region}
-               className={`px-6 py-3 rounded-xl font-semibold transition-all flex items-center justify-center gap-2 min-w-[140px] ${
-                 isSweepMode 
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white' 
-                  : 'bg-brand-600 hover:bg-brand-500 text-white'
-               } disabled:opacity-50 disabled:cursor-not-allowed`}
-             >
-               {isLoading ? <Loader2 className="animate-spin" size={20} /> : (isSweepMode ? <Globe2 size={20} /> : <Search size={20} />)}
-               {isLoading ? 'Buscando...' : (isSweepMode ? 'Escanear' : 'Buscar')}
-             </button>
+                  />
+                  {isSweepMode && (
+                    <span className="hidden lg:inline absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase font-bold text-emerald-500 border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded pointer-events-none">
+                      Modo Varredura
+                    </span>
+                  )}
+               </div>
+
+               {/* Divider Desktop */}
+               <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
+
+               {/* Input: Região */}
+               <div className="relative group w-full">
+                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
+                  <input
+                    type="text"
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    placeholder="Ex: Av. Paulista, SP ou Bairro Savassi"
+                    className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
+                    disabled={isLoading}
+                  />
+               </div>
+
+               {/* Divider Desktop */}
+               <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
+
+               {/* Select: Quantidade */}
+               <div className="relative group w-full md:w-36 bg-slate-800/50 md:bg-transparent rounded-lg md:rounded-none border border-slate-700 md:border-none">
+                   <ListFilter className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
+                   <select 
+                      value={maxResults}
+                      onChange={(e) => setMaxResults(Number(e.target.value))}
+                      className="w-full bg-transparent border-none text-white focus:ring-0 h-12 pl-10 pr-8 appearance-none cursor-pointer text-base"
+                      disabled={isLoading}
+                   >
+                      <option value={20} className="bg-slate-900">20 leads</option>
+                      <option value={50} className="bg-slate-900">50 leads</option>
+                      <option value={80} className="bg-slate-900">80 leads</option>
+                      <option value={100} className="bg-slate-900">100 leads</option>
+                   </select>
+                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                   </div>
+               </div>
+
+               {/* Button */}
+               <button
+                 type="submit"
+                 disabled={isLoading || !region}
+                 className={`ml-0 md:ml-2 mt-2 md:mt-0 px-6 h-12 rounded-xl font-bold transition-all flex items-center justify-center gap-2 w-full md:w-auto whitespace-nowrap shadow-lg ${
+                   isSweepMode 
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20' 
+                    : 'bg-brand-600 hover:bg-brand-500 text-white shadow-brand-500/20'
+                 } disabled:opacity-50 disabled:cursor-not-allowed`}
+               >
+                 {isLoading ? <Loader2 className="animate-spin" size={20} /> : (isSweepMode ? <Globe2 size={20} /> : <Search size={20} />)}
+                 {isLoading ? 'Buscando...' : (isSweepMode ? 'Escanear Área' : 'Buscar')}
+               </button>
+            </div>
           </form>
+
           {isSweepMode && (
-            <p className="text-xs text-emerald-400/80 mt-2 flex items-center justify-center gap-1">
-              <Globe2 size={12}/> O Modo Varredura encontrará empresas de diversos setores na região indicada.
+            <p className="text-xs text-emerald-400/80 mt-3 flex items-center justify-center gap-1 animate-fadeIn">
+              <Globe2 size={12}/> 
+              <strong>Dica:</strong> Para melhores resultados na varredura, especifique o nome da Rua, Avenida ou o Bairro exato.
             </p>
           )}
         </section>

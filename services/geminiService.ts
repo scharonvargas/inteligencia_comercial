@@ -44,7 +44,7 @@ export const fetchAndAnalyzeBusinesses = async (
   // Detecta se é varredura (segmento genérico ou vazio enviado pelo App.tsx)
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
-  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica ampla' : 'busca segmentada'} para meta de ${maxResults} empresas...`);
+  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'} em "${region}" para meta de ${maxResults} empresas...`);
   
   const modelId = "gemini-2.5-flash";
 
@@ -56,20 +56,22 @@ export const fetchAndAnalyzeBusinesses = async (
     // Lista de exclusão para evitar duplicatas
     const exclusionList = Array.from(seenNames).slice(-50).join(", "); // Limita contexto aos ultimos 50 nomes
 
-    onProgress(`Executando varredura ${attempts}: Buscando ${currentBatchSize} novas empresas (Total acumulado: ${allEntities.length})...`);
+    onProgress(`Executando lote ${attempts}: Buscando ${currentBatchSize} empresas (Total acumulado: ${allEntities.length})...`);
 
     // Construção do Prompt Dinâmico
     let promptTask = "";
     if (isBroadSearch) {
       promptTask = `
-        1. REALIZE UMA VARREDURA GEOGRÁFICA na área: "${region}".
-        2. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES (Mix de Comércio, Serviços, Escritórios, Indústria).
-        3. FOCO: Priorize aglomerados comerciais, prédios corporativos e lojas de rua nesta região.
+        1. REALIZE UMA VARREDURA GEOGRÁFICA DETALHADA no local: "${region}".
+        2. ANÁLISE DE GRANULARIDADE:
+           - Se "${region}" for uma RUA ou AVENIDA: Identifique e liste empresas situadas EXATAMENTE nesta via e seus cruzamentos imediatos.
+           - Se "${region}" for um BAIRRO: Mapeie os principais centros comerciais, galerias e ruas movimentadas deste bairro.
+        3. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES (Comércio Varejista, Serviços Profissionais, Escritórios, Alimentação).
         4. IMPORTANTE: NÃO repita estas empresas já listadas: [${exclusionList}].
       `;
     } else {
       promptTask = `
-        1. Pesquise por empresas especificamente do segmento "${segment}" em "${region}".
+        1. Pesquise por empresas especificamente do segmento "${segment}" na região de "${region}".
         2. Encontre EXATAMENTE ${currentBatchSize} NOVOS candidatos potenciais.
         3. IMPORTANTE: NÃO inclua estas empresas que já encontrei: [${exclusionList}].
       `;
@@ -80,9 +82,9 @@ export const fetchAndAnalyzeBusinesses = async (
       
       TAREFA:
       ${promptTask}
-      4. ANALISE cada candidato buscando sinais de atividade legítima e recente.
-      5. FILTRE E EXCLUA: Negócios fechados definitivamente ou residenciais puros.
-      6. CLASSIFIQUE corretamente a categoria de cada um (não use "Geral", seja específico, ex: "Escritório de Advocacia", "Padaria", "Consultoria TI").
+      5. ANALISE cada candidato buscando sinais de atividade legítima e recente.
+      6. FILTRE E EXCLUA: Negócios fechados definitivamente ou residenciais puros.
+      7. CLASSIFIQUE corretamente a categoria de cada um (não use "Geral", seja específico, ex: "Escritório de Advocacia", "Padaria", "Consultoria TI").
       
       FORMATO DE SAÍDA:
       Retorne estritamente um array JSON válido (sem comentários) dentro de um bloco markdown.
