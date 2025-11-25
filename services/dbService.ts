@@ -44,6 +44,21 @@ export const dbService = {
   },
 
   /**
+   * Testa a conexão com o banco de dados
+   */
+  testConnection: async (): Promise<boolean> => {
+    if (!supabase) return false;
+    try {
+      const { count, error } = await supabase.from('prospects').select('*', { count: 'exact', head: true });
+      if (error) return false;
+      return true;
+    } catch (e) {
+      console.warn("Falha no teste de conexão Supabase:", e);
+      return false;
+    }
+  },
+
+  /**
    * Salva ou remove um prospect
    */
   toggleProspect: async (business: BusinessEntity): Promise<boolean> => {

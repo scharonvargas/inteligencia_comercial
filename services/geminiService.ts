@@ -38,82 +38,93 @@ function getWhatsAppUrl(phone: string | null, companyName: string): string | nul
 }
 
 /**
- * Parser JSON Robusto v2
- * Protege URLs antes de limpar comentários e corrige estruturas JSON malformadas comuns de LLMs.
+ * Parser JSON Robusto v4
+ * 1. Protege URLs.
+ * 2. Corrige objetos soltos (}{ -> },{).
+ * 3. Corrige vírgulas trailing.
+ * 4. Fallback de extração via Regex se o parse principal falhar.
  */
 function cleanAndParseJSON(text: string): any[] {
-  // 1. Tratamento de Input Vazio/Inválido
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
     return [];
   }
 
-  let cleanText = text;
+  // 1. Remover blocos de código Markdown
+  let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
 
-  // 2. Extrair conteúdo de blocos de código Markdown (```json ... ```) se existirem
-  const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (markdownMatch && markdownMatch[1]) {
-    cleanText = markdownMatch[1];
-  }
+  // 2. Proteger URLs (substituir :// por token para não ser removido como comentário)
+  const URL_TOKEN = '___URL_SCHEME___';
+  cleanText = cleanText.replace(/:\/\//g, URL_TOKEN);
 
-  // 3. Isolar a estrutura de dados (encontrar o primeiro [ ou { e o último ] ou })
-  const firstBracket = cleanText.indexOf('[');
+  // 3. Remover comentários de linha (// ...)
+  cleanText = cleanText.replace(/\/\/.*$/gm, '');
+
+  // 4. Restaurar URLs
+  cleanText = cleanText.replace(new RegExp(URL_TOKEN, 'g'), '://');
+
+  // 5. Normalizar Estrutura (Encontrar o JSON real dentro do texto)
   const firstBrace = cleanText.indexOf('{');
-  
-  let startIdx = -1;
-  let endIdx = -1;
-  let isArray = true;
+  const firstBracket = cleanText.indexOf('[');
 
-  // Determina onde começa o JSON
+  // Se não encontrar JSON, abortar
+  if (firstBrace === -1 && firstBracket === -1) return [];
+
+  let startIdx = 0;
+  let endIdx = cleanText.length;
+
+  // Determinar se começa com Array [ ou Objeto {
+  // Prioriza Array se vier antes ou se não tiver objeto
   if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
       startIdx = firstBracket;
-      endIdx = cleanText.lastIndexOf(']');
-      isArray = true;
+      endIdx = cleanText.lastIndexOf(']') + 1;
   } else if (firstBrace !== -1) {
       startIdx = firstBrace;
-      endIdx = cleanText.lastIndexOf('}');
-      isArray = false;
+      endIdx = cleanText.lastIndexOf('}') + 1;
   }
 
-  if (startIdx !== -1 && endIdx !== -1) {
-      cleanText = cleanText.substring(startIdx, endIdx + 1);
-      
-      // Se detectou objetos soltos (ex: {...} {...}), força array e vírgulas
-      if (!isArray) {
-          // Substitui "}{" por "},{" para corrigir múltiplos objetos sem array
-          cleanText = `[${cleanText.replace(/}\s*{/g, '},{')}]`;
+  let jsonString = cleanText.substring(startIdx, endIdx);
+
+  // 6. Corrigir Objetos Soltos (Stream de JSON)
+  // Ex: transformar "...} {..." ou "...}\n{..." em "...},{..."
+  jsonString = jsonString.replace(/}\s*{/g, '},{');
+
+  // 7. Remover vírgulas finais inválidas (Trailing Commas) antes de fechar array/objeto
+  jsonString = jsonString.replace(/,(\s*[\]}])/g, '$1');
+
+  // 8. Garantir que é um Array
+  // Se o string resultante começar com {, envolve em []
+  if (jsonString.trim().startsWith('{')) {
+      jsonString = `[${jsonString}]`;
+  }
+
+  // TENTATIVA 1: Parse Padrão
+  try {
+    const result = JSON.parse(jsonString);
+    return Array.isArray(result) ? result : [result];
+  } catch (e) {
+    console.warn("JSON Parse (Tentativa 1) falhou. Tentando extração heurística via Regex.", e);
+    
+    // TENTATIVA 2: Extração Heurística (Salva-vidas)
+    // Se o JSON principal estiver quebrado, tenta extrair objetos individuais {...}
+    // Regex não recursivo, pega o nível mais externo possível de chaves balanceadas simples
+    const matches = jsonString.match(/\{[\s\S]*?\}(?=\s*(?:,|$)|\])/g);
+    
+    if (matches && matches.length > 0) {
+      const results: any[] = [];
+      for (const match of matches) {
+        try {
+          // Tenta parsear cada objeto individualmente
+          // Remove vírgulas trailing dentro do objeto específico se houver
+          const cleanMatch = match.replace(/,(\s*})/g, '$1');
+          const obj = JSON.parse(cleanMatch);
+          results.push(obj);
+        } catch (err) {
+          // Ignora objetos quebrados individualmente
+        }
       }
-  } else {
-      // Se não encontrou estrutura JSON, retorna vazio sem erro (provavelmente texto de recusa da IA)
-      return [];
-  }
+      if (results.length > 0) return results;
+    }
 
-  // TENTATIVA 1: Parse direto (Otimista)
-  try {
-    const result = JSON.parse(cleanText);
-    return Array.isArray(result) ? result : [result];
-  } catch (e) {
-    // Falhou? Vamos limpar.
-  }
-
-  // 4. Limpeza Avançada
-  // Passo A: Proteger URLs substituindo :// por um token seguro (evita que o limpador de comentários quebre links)
-  const protectedText = cleanText.replace(/:\/\//g, '__CSS__');
-
-  // Passo B: Remover comentários de linha (agora seguro para URLs) e vírgulas sobrando
-  let sanitized = protectedText
-    .replace(/\/\/.*$/gm, '') // Remove // até o fim da linha
-    .replace(/,(\s*[}\]])/g, '$1') // Remove vírgula antes de fechar } ou ]
-    .replace(/[\x00-\x1F\x7F-\x9F]/g, ""); // Remove caracteres de controle
-
-  // Passo C: Restaurar URLs
-  sanitized = sanitized.replace(/__CSS__/g, '://');
-
-  // TENTATIVA 2: Parse do texto sanitizado
-  try {
-    const result = JSON.parse(sanitized);
-    return Array.isArray(result) ? result : [result];
-  } catch (e) {
-    console.error("Falha ao analisar JSON mesmo após sanitização.", e);
     return [];
   }
 }
@@ -219,10 +230,10 @@ export const fetchAndAnalyzeBusinesses = async (
     if (isBroadSearch) {
       promptTask = `
         1. REALIZE UMA VARREDURA GEOGRÁFICA DETALHADA no local: "${region}".
-        2. ANÁLISE DE GRANULARIDADE:
-           - Se for RUA/AVENIDA: Liste empresas situadas EXATAMENTE nesta via.
-           - Se for BAIRRO: Mapeie os principais centros comerciais deste bairro.
-        3. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES.
+        2. ANÁLISE DE GRANULARIDADE E HIERARQUIA:
+           - CASO A (Via Específica): Se a busca for em uma RUA ou AVENIDA, liste as empresas situadas EXATAMENTE nesta via, lado a lado.
+           - CASO B (Área Ampla): Se a busca for em um BAIRRO ou CIDADE, PRIORIZE serviços essenciais e de alto fluxo (Mercados, Farmácias, Padarias, Postos de Combustível, Clínicas Populares) ANTES de buscar nichos específicos.
+        3. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES (Evite repetir o mesmo ramo muitas vezes).
         4. IMPORTANTE: NÃO repita estas empresas: [${exclusionList}].
       `;
     } else {
@@ -234,7 +245,7 @@ export const fetchAndAnalyzeBusinesses = async (
     }
 
     const prompt = `
-      Atue como um agente de Business Intelligence Sênior.
+      Atue como um agente de Business Intelligence Sênior e Analista de Território.
       
       TAREFA:
       ${promptTask}
