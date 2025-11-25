@@ -21,6 +21,7 @@ export interface BusinessEntity {
   lat?: number;
   lng?: number;
   isProspect?: boolean; // Novo campo para controle de favoritos
+  pipelineStage?: string;
 }
 
 export interface SearchParams {

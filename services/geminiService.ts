@@ -5,23 +5,98 @@ import { dbService } from "./dbService";
 const apiKey = process.env.API_KEY || '';
 const ai = new GoogleGenAI({ apiKey });
 
+// Cache em memória para evitar chamadas repetidas na mesma sessão
+const searchCache = new Map<string, BusinessEntity[]>();
+
 /**
- * Parses the raw text response from Gemini to extract the JSON array.
+ * Utilitário de espera (sleep)
  */
-function extractJson(text: string): any[] {
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Parser JSON Robusto
+ * Tenta limpar e corrigir a string retornada pela IA antes de fazer o parse.
+ */
+function cleanAndParseJSON(text: string): any[] {
+  let cleanText = text;
+
+  // 1. Extrair conteúdo de blocos de código Markdown (```json ... ```)
+  const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (markdownMatch && markdownMatch[1]) {
+    cleanText = markdownMatch[1];
+  }
+
+  // 2. Encontrar o array JSON mais externo
+  const firstBracket = cleanText.indexOf('[');
+  const lastBracket = cleanText.lastIndexOf(']');
+  
+  if (firstBracket !== -1 && lastBracket !== -1) {
+    cleanText = cleanText.substring(firstBracket, lastBracket + 1);
+  } else {
+    // Se não achar array, tenta achar objeto único e colocar num array
+    const firstBrace = cleanText.indexOf('{');
+    const lastBrace = cleanText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+       cleanText = `[${cleanText.substring(firstBrace, lastBrace + 1)}]`;
+    }
+  }
+
+  // 3. Limpeza de erros comuns de sintaxe JSON gerados por LLMs
+  cleanText = cleanText
+    // Remove comentários //
+    .replace(/\/\/.*$/gm, '') 
+    // Remove vírgulas trailing (vírgula antes de fechar } ou ])
+    .replace(/,(\s*[}\]])/g, '$1')
+    // Remove caracteres de controle invisíveis
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, ""); 
+
   try {
-    const match = text.match(/```json\s*([\s\S]*?)\s*```/);
-    if (match && match[1]) {
-      return JSON.parse(match[1]);
-    }
-    const arrayMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (arrayMatch) {
-      return JSON.parse(arrayMatch[0]);
-    }
-    throw new Error("Nenhum JSON encontrado");
+    const result = JSON.parse(cleanText);
+    return Array.isArray(result) ? result : [];
   } catch (e) {
-    console.error("Falha ao analisar JSON da resposta Gemini:", e);
+    console.error("Falha crítica ao analisar JSON. Texto bruto:", text);
+    console.error("Texto limpo tentado:", cleanText);
     return [];
+  }
+}
+
+/**
+ * Função Wrapper com Retry Logic (Backoff Exponencial)
+ */
+async function generateContentWithRetry(
+  modelId: string, 
+  prompt: string, 
+  isBroadSearch: boolean,
+  maxRetries = 3
+): Promise<any> {
+  let attempt = 0;
+  
+  while (attempt < maxRetries) {
+    try {
+      const response = await ai.models.generateContent({
+        model: modelId,
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          temperature: isBroadSearch ? 0.7 : 0.4, 
+        },
+      });
+      return response;
+    } catch (error: any) {
+      attempt++;
+      console.warn(`Tentativa ${attempt} falhou:`, error.message);
+      
+      // Se for erro de autenticação ou cliente, não adianta tentar de novo
+      if (error.message?.includes('API_KEY') || error.status === 400 || error.status === 403) {
+        throw error;
+      }
+
+      if (attempt >= maxRetries) throw error;
+      
+      // Backoff exponencial: espera 1s, 2s, 4s...
+      const delay = 1000 * Math.pow(2, attempt - 1);
+      await wait(delay);
+    }
   }
 }
 
@@ -35,99 +110,102 @@ export const fetchAndAnalyzeBusinesses = async (
     throw new Error("A chave da API está ausente. Selecione um projeto Google Cloud válido com faturamento ativado.");
   }
 
-  const BATCH_SIZE = 20; // Gemini processa melhor em lotes menores
+  // 1. Verificação de Cache
+  const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}`;
+  if (searchCache.has(cacheKey)) {
+    onProgress("Recuperando resultados do cache instantâneo...");
+    await wait(600); // Pequeno delay UX
+    return searchCache.get(cacheKey)!;
+  }
+
+  const BATCH_SIZE = 20;
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
   let attempts = 0;
-  const maxAttempts = Math.ceil(maxResults / BATCH_SIZE) + 2; // Margem de segurança
+  // Limite de segurança para evitar loops infinitos se a IA retornar poucos resultados
+  const maxLoops = Math.ceil(maxResults / BATCH_SIZE) + 3; 
 
-  // Detecta se é varredura (segmento genérico ou vazio enviado pelo App.tsx)
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
   onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'} em "${region}" para meta de ${maxResults} empresas...`);
   
   const modelId = "gemini-2.5-flash";
 
-  while (allEntities.length < maxResults && attempts < maxAttempts) {
+  while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
     const remaining = maxResults - allEntities.length;
+    // Pede um pouco a mais para compensar filtros de duplicidade
     const currentBatchSize = Math.min(BATCH_SIZE, remaining);
     
-    // Lista de exclusão para evitar duplicatas
-    const exclusionList = Array.from(seenNames).slice(-50).join(", "); // Limita contexto aos ultimos 50 nomes
+    // Lista de exclusão para evitar duplicatas (context window management)
+    const exclusionList = Array.from(seenNames).slice(-40).join(", ");
 
-    onProgress(`Executando lote ${attempts}: Buscando ${currentBatchSize} empresas (Total acumulado: ${allEntities.length})...`);
+    onProgress(`Executando lote ${attempts}/${Math.ceil(maxResults/BATCH_SIZE)}: Buscando ${currentBatchSize} empresas (Total acumulado: ${allEntities.length})...`);
 
-    // Construção do Prompt Dinâmico
     let promptTask = "";
     if (isBroadSearch) {
       promptTask = `
         1. REALIZE UMA VARREDURA GEOGRÁFICA DETALHADA no local: "${region}".
         2. ANÁLISE DE GRANULARIDADE:
-           - Se "${region}" for uma RUA ou AVENIDA: Identifique e liste empresas situadas EXATAMENTE nesta via e seus cruzamentos imediatos.
-           - Se "${region}" for um BAIRRO: Mapeie os principais centros comerciais, galerias e ruas movimentadas deste bairro.
-        3. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES (Comércio Varejista, Serviços Profissionais, Escritórios, Alimentação).
-        4. IMPORTANTE: NÃO repita estas empresas já listadas: [${exclusionList}].
+           - Se for RUA/AVENIDA: Liste empresas situadas EXATAMENTE nesta via.
+           - Se for BAIRRO: Mapeie os principais centros comerciais deste bairro.
+        3. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES.
+        4. IMPORTANTE: NÃO repita estas empresas: [${exclusionList}].
       `;
     } else {
       promptTask = `
-        1. Pesquise por empresas especificamente do segmento "${segment}" na região de "${region}".
-        2. Encontre EXATAMENTE ${currentBatchSize} NOVOS candidatos potenciais.
-        3. IMPORTANTE: NÃO inclua estas empresas que já encontrei: [${exclusionList}].
+        1. Pesquise por empresas do segmento "${segment}" na região de "${region}".
+        2. Encontre EXATAMENTE ${currentBatchSize} candidatos.
+        3. IMPORTANTE: NÃO inclua estas empresas: [${exclusionList}].
       `;
     }
 
     const prompt = `
-      Atue como um agente rigoroso de Business Intelligence e Mapeamento de Território.
+      Atue como um agente de Business Intelligence.
       
       TAREFA:
       ${promptTask}
-      5. ANALISE cada candidato buscando sinais de atividade legítima e recente.
-      6. FILTRE E EXCLUA: Negócios fechados definitivamente ou residenciais puros.
-      7. CLASSIFIQUE corretamente a categoria de cada um (não use "Geral", seja específico, ex: "Escritório de Advocacia", "Padaria", "Consultoria TI").
+      5. ANALISE sinais de atividade recente.
+      6. FILTRE: Apenas negócios operantes.
+      7. CLASSIFIQUE a categoria específica.
       
       FORMATO DE SAÍDA:
-      Retorne estritamente um array JSON válido (sem comentários) dentro de um bloco markdown.
-      ESTIME AS COORDENADAS (Latitude/Longitude) baseadas no endereço encontrado para plotagem em mapa.
+      Retorne APENAS um Array JSON válido.
+      ESTIME AS COORDENADAS (lat/lng) para plotagem.
       
-      Estrutura:
+      Exemplo de Objeto:
       {
-        "name": "string",
-        "address": "string",
-        "phone": "string ou null",
-        "website": "string ou null",
-        "socialLinks": ["string"],
-        "lastActivityEvidence": "string (ex: 'Avaliação Google 2 dias atrás')",
-        "daysSinceLastActivity": number (estimativa em dias, -1 se desconhecido),
-        "trustScore": number (0-100),
-        "category": "string (Seja específico)",
-        "status": "Verificado" | "Ativo" | "Suspeito" | "Fechado" | "Desconhecido",
-        "lat": number,
-        "lng": number
+        "name": "Nome da Empresa",
+        "address": "Endereço Completo",
+        "phone": "(XX) XXXX-XXXX",
+        "website": "url ou null",
+        "socialLinks": ["url1", "url2"],
+        "lastActivityEvidence": "Post Instagram 2 dias atrás",
+        "daysSinceLastActivity": 2,
+        "trustScore": 85,
+        "category": "Categoria Específica",
+        "status": "Verificado", 
+        "lat": -23.55,
+        "lng": -46.63
       }
     `;
 
     try {
-      const response = await ai.models.generateContent({
-        model: modelId,
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          temperature: isBroadSearch ? 0.7 : 0.5, // Maior temperatura na varredura para garantir diversidade
-        },
-      });
+      // Usa a função com retry ao invés de chamar direto
+      const response = await generateContentWithRetry(modelId, prompt, isBroadSearch);
 
       const rawText = response.text || "";
-      const batchData = extractJson(rawText);
+      const batchData = cleanAndParseJSON(rawText);
 
       if (!batchData || batchData.length === 0) {
-        onProgress("Nenhum novo resultado encontrado neste lote. Finalizando busca.");
-        break;
+        onProgress("IA não retornou dados estruturados neste lote. Tentando ajustar...");
+        // Se falhar o parse, tenta continuar o loop ao invés de quebrar tudo
+        if (attempts >= maxLoops) break;
+        continue;
       }
 
       let newCount = 0;
       for (const item of batchData) {
-        // Normalização simples para verificação de duplicidade
         const normalizedName = (item.name || "").toLowerCase().trim();
         
         if (normalizedName && !seenNames.has(normalizedName)) {
@@ -136,8 +214,6 @@ export const fetchAndAnalyzeBusinesses = async (
            
            const address = item.address || "Endereço Desconhecido";
            const name = item.name || "Nome Desconhecido";
-           
-           // Verifica se já é um prospect salvo no DB local
            const isSaved = dbService.checkIsProspect(name, address);
 
            allEntities.push({
@@ -149,33 +225,44 @@ export const fetchAndAnalyzeBusinesses = async (
             socialLinks: Array.isArray(item.socialLinks) ? item.socialLinks : [],
             lastActivityEvidence: item.lastActivityEvidence || "Sem dados recentes",
             daysSinceLastActivity: typeof item.daysSinceLastActivity === 'number' ? item.daysSinceLastActivity : -1,
-            trustScore: typeof item.trustScore === 'number' ? item.trustScore : 0,
+            trustScore: typeof item.trustScore === 'number' ? item.trustScore : 50,
             status: (Object.values(BusinessStatus).includes(item.status) ? item.status : BusinessStatus.UNKNOWN) as BusinessStatus,
             category: item.category || (isBroadSearch ? "Diversos" : segment),
             lat: typeof item.lat === 'number' ? item.lat : undefined,
             lng: typeof item.lng === 'number' ? item.lng : undefined,
-            isProspect: isSaved
+            isProspect: isSaved,
+            pipelineStage: 'new' // Default stage
           });
         }
       }
 
-      if (newCount === 0) {
-        onProgress("A IA retornou apenas duplicatas. Encerrando busca antecipadamente.");
+      // Se a IA começar a rodar em círculos (só duplicatas), paramos.
+      if (newCount === 0 && attempts > 1) {
+        onProgress("Limite de novidade atingido na região. Encerrando.");
         break;
       }
       
-      // Delay pequeno para evitar rate limit agressivo se necessário
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Delay tático entre lotes para evitar "Too Many Requests" em bursts longos
+      await wait(1000);
 
     } catch (error: any) {
-      console.warn(`Erro no lote ${attempts}:`, error);
-      // Não lança erro fatal, tenta continuar ou retornar o que tem
-      if (allEntities.length > 0) break; 
-      throw new Error(error.message || "Falha ao buscar dados.");
+      console.warn(`Erro fatal no lote ${attempts}:`, error);
+      // Se já temos alguns dados, retornamos o que tem. Se não, erro.
+      if (allEntities.length > 0) {
+        onProgress("Conexão instável, retornando dados parciais...");
+        break; 
+      }
+      throw new Error("Não foi possível conectar à Inteligência Artificial. Verifique sua chave API ou tente novamente em instantes.");
     }
   }
 
   onProgress(`Processamento concluído. ${allEntities.length} empresas encontradas.`);
+  
+  // Salva no cache antes de retornar
+  if (allEntities.length > 0) {
+    searchCache.set(cacheKey, allEntities);
+  }
+  
   return allEntities;
 };
 
@@ -185,30 +272,20 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
   }
 
   const prompt = `
-    Atue como um especialista em Copywriting B2B e Vendas Consultivas.
-    Escreva um "Cold Email" (e-mail de prospecção) curto, personalizado e altamente persuasivo para a empresa abaixo.
+    Atue como um especialista em Copywriting B2B.
+    Escreva um "Cold Email" (prospecção) curto e persuasivo para:
     
-    Dados do Prospect:
-    - Empresa: ${business.name}
-    - Segmento: ${business.category}
-    - Evidência Recente: ${business.lastActivityEvidence || "Não especificada"}
-    - Site: ${business.website || "Sem site"}
+    Empresa: ${business.name}
+    Ramo: ${business.category}
+    Evidência: ${business.lastActivityEvidence}
     
-    Estrutura do E-mail:
-    1. Assunto: Curto, intrigante e relevante para o negócio deles.
-    2. Abertura (Hook): Mencione a evidência encontrada ou o contexto da região para mostrar que não é spam.
-    3. Corpo: Sugira sutilmente uma parceria ou melhoria digital (ex: tráfego pago, SEO, software de gestão) relevante para ${business.category}.
-    4. Call to Action (CTA): Uma pergunta de baixo atrito para iniciar conversa (ex: "Podemos conversar 5 min?").
+    Estrutura:
+    1. Assunto (Curto)
+    2. Hook (Baseado na evidência ou região)
+    3. Proposta de valor sutil
+    4. CTA (Pergunta rápida)
     
-    Regras de Tom:
-    - Profissional, mas acessível.
-    - Português do Brasil.
-    - Sem exageros de marketing.
-    
-    Retorne APENAS o texto plano do e-mail, formatado com:
-    Assunto: ...
-    
-    [Corpo do e-mail]
+    Retorne apenas o texto do e-mail.
   `;
 
   try {
@@ -219,6 +296,6 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
     return response.text || "Não foi possível gerar o e-mail.";
   } catch (error) {
     console.error("Erro na geração de e-mail:", error);
-    return "Erro ao conectar com a IA para gerar o e-mail.";
+    return "Erro ao conectar com a IA.";
   }
 };
