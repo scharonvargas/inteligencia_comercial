@@ -14,6 +14,30 @@ const searchCache = new Map<string, BusinessEntity[]>();
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
+ * Utilitário para formatar link de WhatsApp
+ */
+function getWhatsAppUrl(phone: string | null, companyName: string): string | null {
+  if (!phone) return null;
+  
+  // Limpa caracteres não numéricos
+  const cleanPhone = phone.replace(/\D/g, '');
+  
+  // Verifica se tem formato mínimo para ser celular BR (DDD + 9 dígitos) = 11 dígitos
+  // Ou formato internacional
+  if (cleanPhone.length < 10) return null;
+
+  let finalNumber = cleanPhone;
+  
+  // Se for numero BR sem codigo de pais, adiciona 55
+  if (cleanPhone.length >= 10 && cleanPhone.length <= 11) {
+    finalNumber = `55${cleanPhone}`;
+  }
+
+  const message = `Olá, encontrei a ${companyName} e gostaria de saber mais sobre seus serviços.`;
+  return `https://wa.me/${finalNumber}?text=${encodeURIComponent(message)}`;
+}
+
+/**
  * Parser JSON Robusto
  * Tenta limpar e corrigir a string retornada pela IA antes de fazer o parse.
  */
@@ -161,27 +185,35 @@ export const fetchAndAnalyzeBusinesses = async (
     }
 
     const prompt = `
-      Atue como um agente de Business Intelligence.
+      Atue como um agente de Business Intelligence Sênior.
       
       TAREFA:
       ${promptTask}
-      5. ANALISE sinais de atividade recente.
+      
+      5. INVESTIGAÇÃO PROFUNDA DE ATIVIDADE (Crucial):
+         - Vasculhe snippets de redes sociais (Instagram, LinkedIn, Facebook).
+         - Procure por datas exatas de postagens recentes.
+         - Identifique o TIPO de conteúdo (ex: "Post sobre evento", "Oferta de emprego", "Mudança de cardápio", "Resposta a review").
+         - Se houver blog/notícias, cite o título do último artigo.
+         - Se houver horário de funcionamento atualizado recentemente, cite.
+      
       6. FILTRE: Apenas negócios operantes.
       7. CLASSIFIQUE a categoria específica.
-      
+
       FORMATO DE SAÍDA:
       Retorne APENAS um Array JSON válido.
       ESTIME AS COORDENADAS (lat/lng) para plotagem.
+      PRIORIZE NÚMEROS DE CELULAR/WHATSAPP no campo "phone".
       
       Exemplo de Objeto:
       {
         "name": "Nome da Empresa",
         "address": "Endereço Completo",
-        "phone": "(XX) XXXX-XXXX",
+        "phone": "(XX) 9XXXX-XXXX", // Priorize celular
         "website": "url ou null",
         "socialLinks": ["url1", "url2"],
-        "lastActivityEvidence": "Post Instagram 2 dias atrás",
-        "daysSinceLastActivity": 2,
+        "lastActivityEvidence": "Post no Instagram em 15/10/24 sobre 'Promoção de Primavera'", // SEJA ESPECÍFICO COM DATAS E TEMAS
+        "daysSinceLastActivity": 2, // Calcule baseado na evidência encontrada
         "trustScore": 85,
         "category": "Categoria Específica",
         "status": "Verificado", 
@@ -215,6 +247,14 @@ export const fetchAndAnalyzeBusinesses = async (
            const address = item.address || "Endereço Desconhecido";
            const name = item.name || "Nome Desconhecido";
            const isSaved = dbService.checkIsProspect(name, address);
+           
+           // Gerar link de whatsapp se possível
+           const whatsappLink = getWhatsAppUrl(item.phone, name);
+           const finalSocialLinks = Array.isArray(item.socialLinks) ? item.socialLinks : [];
+           
+           if (whatsappLink) {
+             finalSocialLinks.unshift(whatsappLink); // Adiciona wa.me como primeiro link social se existir
+           }
 
            allEntities.push({
             id: `biz-${Date.now()}-${allEntities.length}`,
@@ -222,7 +262,7 @@ export const fetchAndAnalyzeBusinesses = async (
             address: address,
             phone: item.phone || null,
             website: item.website || null,
-            socialLinks: Array.isArray(item.socialLinks) ? item.socialLinks : [],
+            socialLinks: finalSocialLinks,
             lastActivityEvidence: item.lastActivityEvidence || "Sem dados recentes",
             daysSinceLastActivity: typeof item.daysSinceLastActivity === 'number' ? item.daysSinceLastActivity : -1,
             trustScore: typeof item.trustScore === 'number' ? item.trustScore : 50,
@@ -277,14 +317,15 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
     
     Empresa: ${business.name}
     Ramo: ${business.category}
-    Evidência: ${business.lastActivityEvidence}
+    Evidência Recente: ${business.lastActivityEvidence}
     
     Estrutura:
-    1. Assunto (Curto)
-    2. Hook (Baseado na evidência ou região)
+    1. Assunto (Curto e intrigante)
+    2. Hook (Use a evidência recente para mostrar que pesquisou sobre eles)
     3. Proposta de valor sutil
-    4. CTA (Pergunta rápida)
+    4. CTA (Pergunta rápida para resposta sim/não)
     
+    Tom de voz: Profissional, mas conversacional. Evite clichês de marketing.
     Retorne apenas o texto do e-mail.
   `;
 
