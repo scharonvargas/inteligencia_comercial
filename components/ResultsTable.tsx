@@ -5,7 +5,7 @@ import { dbService } from '../services/dbService';
 import { 
   ExternalLink, Phone, Globe, AlertTriangle, CheckCircle, Download, 
   Activity, ChevronDown, ChevronUp, Calendar, Instagram, Facebook, Linkedin,
-  ChevronLeft, ChevronRight, Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle
+  ChevronLeft, ChevronRight, Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target
 } from 'lucide-react';
 
 interface ResultsTableProps {
@@ -13,6 +13,7 @@ interface ResultsTableProps {
 }
 
 type ActivityFilter = 'all' | '30days' | '90days';
+type LocationFilter = 'all' | 'exact';
 
 // --- Sub-components & Helpers ---
 
@@ -74,7 +75,14 @@ const BusinessRow = React.memo(({
           </button>
         </td>
         <td className="p-4">
-          <div className="font-bold text-slate-200 group-hover:text-brand-400 transition-colors">{biz.name}</div>
+          <div className="flex items-center gap-2">
+             <div className="font-bold text-slate-200 group-hover:text-brand-400 transition-colors">{biz.name}</div>
+             {biz.matchType === 'NEARBY' && (
+                <span className="text-[10px] uppercase font-bold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 whitespace-nowrap flex items-center gap-1" title="Este resultado foi encontrado numa região próxima à solicitada">
+                  <AlertTriangle size={8} /> Região Próxima
+                </span>
+             )}
+          </div>
           <div className="text-xs text-slate-500 mt-1">{biz.category}</div>
         </td>
         <td className="p-4">
@@ -139,8 +147,14 @@ const BusinessRow = React.memo(({
                     "{biz.lastActivityEvidence || "Nenhuma evidência textual encontrada."}"
                   </p>
                   <div className="text-xs text-slate-500">
-                    <p>Endereço:</p>
+                    <p className="flex items-center gap-1 mb-1"><MapPin size={10} /> Endereço:</p>
                     <p className="text-slate-300">{biz.address}</p>
+                    {biz.matchType === 'NEARBY' && (
+                        <p className="text-amber-500 mt-1 italic flex items-center gap-1 bg-amber-500/10 p-1 rounded border border-amber-500/20">
+                           <AlertTriangle size={10} /> 
+                           Localizado em região próxima (Fora do alvo exato)
+                        </p>
+                    )}
                   </div>
                 </div>
 
@@ -264,6 +278,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   const [localData, setLocalData] = useState<BusinessEntity[]>(data);
   const [statusFilter, setStatusFilter] = useState<string>('Todos');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
+  const [locationFilter, setLocationFilter] = useState<LocationFilter>('all'); // Novo estado
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   
   // Email Generator State
@@ -294,10 +309,15 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
       if (activityFilter === '90days') {
         return d.daysSinceLastActivity !== -1 && d.daysSinceLastActivity <= 90;
       }
+
+      // Location Filter (Exact Match)
+      if (locationFilter === 'exact' && d.matchType === 'NEARBY') {
+        return false;
+      }
       
       return true;
     });
-  }, [localData, statusFilter, activityFilter]);
+  }, [localData, statusFilter, activityFilter, locationFilter]);
 
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   
@@ -327,7 +347,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   }, []);
 
   const handleExportCSV = useCallback(() => {
-    const headers = ["Nome", "Prospect", "Status", "Nota Confiabilidade", "Categoria", "Telefone", "Site", "Última Atividade (Evidência)", "Dias s/ Ativ.", "Endereço"];
+    const headers = ["Nome", "Prospect", "Status", "Nota Confiabilidade", "Categoria", "Telefone", "Site", "Última Atividade (Evidência)", "Dias s/ Ativ.", "Endereço", "Match"];
     const rows = filteredData.map(b => [
       `"${b.name}"`,
       b.isProspect ? "Sim" : "Não",
@@ -338,7 +358,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
       `"${b.website || ''}"`,
       `"${b.lastActivityEvidence || ''}"`,
       b.daysSinceLastActivity,
-      `"${b.address}"`
+      `"${b.address}"`,
+      b.matchType === 'NEARBY' ? "Proximidade" : "Exato"
     ]);
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
@@ -372,8 +393,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     <div className="w-full animate-fadeIn">
       {/* Controles */}
       <div className="flex flex-col gap-4 mb-4">
-        <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0 custom-scrollbar">
+        <div className="flex flex-col md:flex-row justify-between items-center gap-4 flex-wrap">
+          <div className="flex gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0 custom-scrollbar items-center">
             {['Todos', ...Object.values(BusinessStatus)].map(status => (
               <button
                 key={status}
@@ -388,14 +409,31 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
               </button>
             ))}
           </div>
-          <button
-            onClick={handleExportCSV}
-            disabled={filteredData.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg border border-slate-700 transition-colors shrink-0"
-          >
-            <Download size={16} />
-            <span>Exportar CSV</span>
-          </button>
+
+          <div className="flex items-center gap-2">
+             {/* Filtro de Localização */}
+             <button
+               onClick={() => setLocationFilter(prev => prev === 'all' ? 'exact' : 'all')}
+               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors border ${
+                 locationFilter === 'exact' 
+                   ? 'bg-brand-900/40 text-brand-300 border-brand-500/50' 
+                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+               }`}
+               title="Exibe apenas resultados no endereço/bairro exato, removendo expansão de raio"
+             >
+               <Target size={16} className={locationFilter === 'exact' ? "text-brand-400" : ""} />
+               <span>{locationFilter === 'exact' ? 'Apenas Local Exato' : 'Toda a Região'}</span>
+             </button>
+
+             <button
+              onClick={handleExportCSV}
+              disabled={filteredData.length === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg border border-slate-700 transition-colors shrink-0"
+            >
+              <Download size={16} />
+              <span className="hidden sm:inline">Exportar CSV</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 text-sm text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800 w-fit">

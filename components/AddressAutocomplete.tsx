@@ -4,6 +4,7 @@ import { MapPin, Loader2 } from 'lucide-react';
 interface AddressAutocompleteProps {
   value: string;
   onChange: (val: string) => void;
+  onLocationSelect?: (lat: number, lng: number) => void; // Novo callback
   disabled?: boolean;
   placeholder?: string;
   className?: string;
@@ -26,6 +27,7 @@ interface NominatimResult {
 export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
   value,
   onChange,
+  onLocationSelect,
   disabled,
   placeholder,
   className
@@ -92,6 +94,12 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
     }
 
     onChange(formatted);
+    
+    // Passa coordenadas para o pai se disponível
+    if (onLocationSelect && item.lat && item.lon) {
+        onLocationSelect(parseFloat(item.lat), parseFloat(item.lon));
+    }
+
     setIsOpen(false);
     setSuggestions([]);
   };

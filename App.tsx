@@ -26,6 +26,9 @@ const App: React.FC = () => {
     return saved ? Number(saved) : 20;
   });
 
+  // Estado para coordenadas geográficas precisas
+  const [searchCoords, setSearchCoords] = useState<{lat: number, lng: number} | null>(null);
+
   const [isLoading, setIsLoading] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
   const [results, setResults] = useState<BusinessEntity[]>([]);
@@ -78,9 +81,15 @@ const App: React.FC = () => {
     
     let initMsg = "";
     if (isSweepMode) {
-      if (isStreetLevel) initMsg = "Iniciando varredura de alta precisão na via especificada...";
-      else if (isNeighborhoodLevel) initMsg = "Mapeando ecossistema comercial do bairro...";
-      else initMsg = "Iniciando varredura geográfica ampla...";
+      if (searchCoords) {
+        initMsg = `Analisando raio de alta precisão GPS (${searchCoords.lat.toFixed(4)}, ${searchCoords.lng.toFixed(4)})...`;
+      } else if (isStreetLevel) {
+        initMsg = "Iniciando varredura de alta precisão na via especificada...";
+      } else if (isNeighborhoodLevel) {
+        initMsg = "Mapeando ecossistema comercial do bairro...";
+      } else {
+        initMsg = "Iniciando varredura geográfica ampla...";
+      }
     } else {
       initMsg = `Inicializando busca segmentada por "${segment}"...`;
     }
@@ -98,7 +107,8 @@ const App: React.FC = () => {
         (newBatch) => {
            // Callback executado a cada lote encontrado
            setResults(prev => [...prev, ...newBatch]);
-        }
+        },
+        searchCoords // Passamos as coordenadas opcionais
       );
       
       // Nota: fetchAndAnalyzeBusinesses retorna o array completo no final, 
@@ -110,7 +120,7 @@ const App: React.FC = () => {
       setIsLoading(false);
       setProgressMsg('');
     }
-  }, [segment, region, maxResults, hasKey, isSweepMode]);
+  }, [segment, region, maxResults, hasKey, isSweepMode, searchCoords]);
 
   // Handler para atualizar o estágio no Kanban (e refletir na lista principal)
   const handlePipelineChange = useCallback(async (businessId: string, newStage: string) => {
@@ -121,6 +131,18 @@ const App: React.FC = () => {
     
     // 2. Persiste no BD
     await dbService.updatePipelineStage(businessId, newStage);
+  }, []);
+
+  // Handler para quando o autocomplete seleciona um local
+  const handleLocationSelect = useCallback((lat: number, lng: number) => {
+    setSearchCoords({ lat, lng });
+  }, []);
+
+  // Se o usuário digitar manualmente, limpamos as coordenadas para evitar conflito
+  const handleRegionChange = useCallback((val: string) => {
+    setRegion(val);
+    // Só limpa coordenadas se o texto mudar drasticamente (opcional, aqui limpamos por segurança)
+    // setSearchCoords(null); 
   }, []);
 
   return (
@@ -212,10 +234,11 @@ const App: React.FC = () => {
 
                {/* Input: Região */}
                <div className="relative group w-full">
-                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors z-10" size={20} />
+                  <MapPin className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors z-10 ${searchCoords ? 'text-emerald-400' : 'text-slate-500 group-focus-within:text-brand-500'}`} size={20} />
                   <AddressAutocomplete 
                     value={region}
-                    onChange={setRegion}
+                    onChange={handleRegionChange}
+                    onLocationSelect={handleLocationSelect}
                     placeholder="Ex: Av. Paulista, SP ou Bairro Savassi"
                     disabled={isLoading}
                     className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
@@ -275,7 +298,7 @@ const App: React.FC = () => {
                          <p className="flex items-start gap-2">
                            <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
                            {isSweepMode 
-                             ? <span><strong>Especifique a via:</strong> Digite "Rua X" ou "Av. Y" para listar todas as lojas lado a lado naquela rua.</span>
+                             ? <span><strong>Especifique a via:</strong> Selecione o endereço exato no menu para que a IA busque <strong>apenas</strong> naquele local.</span>
                              : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais".</span>
                            }
                          </p>

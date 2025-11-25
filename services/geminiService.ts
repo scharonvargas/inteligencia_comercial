@@ -38,21 +38,18 @@ function getWhatsAppUrl(phone: string | null, companyName: string): string | nul
 }
 
 /**
- * Parser JSON Robusto v4
- * 1. Protege URLs.
- * 2. Corrige objetos soltos (}{ -> },{).
- * 3. Corrige vírgulas trailing.
- * 4. Fallback de extração via Regex se o parse principal falhar.
+ * Parser JSON Robusto v6
+ * Adiciona limpeza extra para caracteres de controle invisíveis e arrays quebrados.
  */
 function cleanAndParseJSON(text: string): any[] {
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
     return [];
   }
 
-  // 1. Remover blocos de código Markdown
+  // 1. Remover blocos de código Markdown e espaços extras
   let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
 
-  // 2. Proteger URLs (substituir :// por token para não ser removido como comentário)
+  // 2. Proteção de URLs (substituir :// por token para não ser removido como comentário)
   const URL_TOKEN = '___URL_SCHEME___';
   cleanText = cleanText.replace(/:\/\//g, URL_TOKEN);
 
@@ -62,7 +59,7 @@ function cleanAndParseJSON(text: string): any[] {
   // 4. Restaurar URLs
   cleanText = cleanText.replace(new RegExp(URL_TOKEN, 'g'), '://');
 
-  // 5. Normalizar Estrutura (Encontrar o JSON real dentro do texto)
+  // 5. Normalizar Estrutura
   const firstBrace = cleanText.indexOf('{');
   const firstBracket = cleanText.indexOf('[');
 
@@ -72,8 +69,6 @@ function cleanAndParseJSON(text: string): any[] {
   let startIdx = 0;
   let endIdx = cleanText.length;
 
-  // Determinar se começa com Array [ ou Objeto {
-  // Prioriza Array se vier antes ou se não tiver objeto
   if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
       startIdx = firstBracket;
       endIdx = cleanText.lastIndexOf(']') + 1;
@@ -85,41 +80,36 @@ function cleanAndParseJSON(text: string): any[] {
   let jsonString = cleanText.substring(startIdx, endIdx);
 
   // 6. Corrigir Objetos Soltos (Stream de JSON)
-  // Ex: transformar "...} {..." ou "...}\n{..." em "...},{..."
   jsonString = jsonString.replace(/}\s*{/g, '},{');
+  // Remover quebras de linha dentro de strings (pode quebrar JSON.parse)
+  // jsonString = jsonString.replace(/\n/g, ' '); 
 
-  // 7. Remover vírgulas finais inválidas (Trailing Commas) antes de fechar array/objeto
+  // 7. Remover vírgulas finais inválidas
   jsonString = jsonString.replace(/,(\s*[\]}])/g, '$1');
 
   // 8. Garantir que é um Array
-  // Se o string resultante começar com {, envolve em []
   if (jsonString.trim().startsWith('{')) {
       jsonString = `[${jsonString}]`;
   }
 
-  // TENTATIVA 1: Parse Padrão
   try {
     const result = JSON.parse(jsonString);
     return Array.isArray(result) ? result : [result];
   } catch (e) {
-    console.warn("JSON Parse (Tentativa 1) falhou. Tentando extração heurística via Regex.", e);
+    console.warn("JSON Parse (Full) falhou. Tentando extração heurística.", e);
     
-    // TENTATIVA 2: Extração Heurística (Salva-vidas)
-    // Se o JSON principal estiver quebrado, tenta extrair objetos individuais {...}
-    // Regex não recursivo, pega o nível mais externo possível de chaves balanceadas simples
+    // TENTATIVA 2: Extração Heurística
     const matches = jsonString.match(/\{[\s\S]*?\}(?=\s*(?:,|$)|\])/g);
     
     if (matches && matches.length > 0) {
       const results: any[] = [];
       for (const match of matches) {
         try {
-          // Tenta parsear cada objeto individualmente
-          // Remove vírgulas trailing dentro do objeto específico se houver
           const cleanMatch = match.replace(/,(\s*})/g, '$1');
           const obj = JSON.parse(cleanMatch);
           results.push(obj);
         } catch (err) {
-          // Ignora objetos quebrados individualmente
+          // Ignora
         }
       }
       if (results.length > 0) return results;
@@ -130,7 +120,7 @@ function cleanAndParseJSON(text: string): any[] {
 }
 
 /**
- * Função Wrapper com Retry Logic (Backoff Exponencial)
+ * Função Wrapper com Retry Logic
  */
 async function generateContentWithRetry(
   modelId: string, 
@@ -155,14 +145,11 @@ async function generateContentWithRetry(
       attempt++;
       console.warn(`Tentativa ${attempt} falhou:`, error.message);
       
-      // Se for erro de autenticação ou cliente, não adianta tentar de novo
       if (error.message?.includes('API_KEY') || error.status === 400 || error.status === 403) {
         throw error;
       }
 
       if (attempt >= maxRetries) throw error;
-      
-      // Backoff exponencial: espera 1s, 2s, 4s...
       const delay = 1000 * Math.pow(2, attempt - 1);
       await wait(delay);
     }
@@ -174,29 +161,26 @@ export const fetchAndAnalyzeBusinesses = async (
   region: string,
   maxResults: number,
   onProgress: (msg: string) => void,
-  onBatchResults: (results: BusinessEntity[]) => void // Novo callback para streaming
+  onBatchResults: (results: BusinessEntity[]) => void,
+  coordinates?: { lat: number, lng: number } | null
 ): Promise<BusinessEntity[]> => {
   if (!apiKey) {
     throw new Error("A chave da API está ausente. Selecione um projeto Google Cloud válido com faturamento ativado.");
   }
 
-  // 1. Verificação de Cache
-  const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}`;
+  const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
   if (searchCache.has(cacheKey)) {
     onProgress("Recuperando resultados do cache instantâneo...");
     const cachedData = searchCache.get(cacheKey)!;
-    await wait(300); // Pequeno delay UX
-    // Emite os dados do cache de uma vez
+    await wait(300);
     onBatchResults(cachedData);
     return cachedData;
   }
 
-  // 2. Pré-carregar prospects do banco para verificação rápida
   onProgress("Sincronizando banco de dados de prospects...");
   let existingProspectsMap = new Set<string>();
   try {
     const prospects = await dbService.getAllProspects();
-    // Cria um Set de assinaturas "nome|endereço" para busca O(1)
     prospects.forEach(p => existingProspectsMap.add(`${p.name.toLowerCase()}|${p.address.toLowerCase()}`));
   } catch (e) {
     console.warn("Não foi possível carregar prospects do banco:", e);
@@ -206,7 +190,6 @@ export const fetchAndAnalyzeBusinesses = async (
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
   let attempts = 0;
-  // Limite de segurança para evitar loops infinitos
   const maxLoops = Math.ceil(maxResults / BATCH_SIZE) + 4; 
 
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
@@ -218,66 +201,80 @@ export const fetchAndAnalyzeBusinesses = async (
   while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
     const remaining = maxResults - allEntities.length;
-    // Pede um pouco a mais para compensar filtros de duplicidade
     const currentBatchSize = Math.min(BATCH_SIZE, remaining);
     
-    // Lista de exclusão para evitar duplicatas (context window management)
     const exclusionList = Array.from(seenNames).slice(-40).join(", ");
 
     onProgress(`Buscando lote ${attempts} (Encontrados: ${allEntities.length}/${maxResults})...`);
 
+    let geoContext = `na região de "${region}"`;
+    if (coordinates) {
+      geoContext = `
+        LOCALIZAÇÃO EXATA: Latitude ${coordinates.lat}, Longitude ${coordinates.lng}.
+        INSTRUÇÃO CRÍTICA: O usuário deseja resultados NESTE PONTO ou num raio máximo de 2km.
+      `;
+    }
+
+    // PROMPT REFINADO: Lógica de Fallback Geográfico e Priorização de Serviços
     let promptTask = "";
     if (isBroadSearch) {
       promptTask = `
-        1. REALIZE UMA VARREDURA GEOGRÁFICA DETALHADA no local: "${region}".
-        2. ANÁLISE DE GRANULARIDADE E HIERARQUIA:
-           - CASO A (Via Específica): Se a busca for em uma RUA ou AVENIDA, liste as empresas situadas EXATAMENTE nesta via, lado a lado.
-           - CASO B (Área Ampla): Se a busca for em um BAIRRO ou CIDADE, PRIORIZE serviços essenciais e de alto fluxo (Mercados, Farmácias, Padarias, Postos de Combustível, Clínicas Populares) ANTES de buscar nichos específicos.
-        3. Encontre EXATAMENTE ${currentBatchSize} empresas de DIVERSOS SETORES (Evite repetir o mesmo ramo muitas vezes).
-        4. IMPORTANTE: NÃO repita estas empresas: [${exclusionList}].
+        1. VARREDURA GEOGRÁFICA EM: ${region}.
+        2. ANÁLISE DE PROXIMIDADE (IMPORTANTE):
+           - Prioridade A: Empresas exatamente no endereço/bairro solicitado. (Marque matchType="EXACT")
+           - Prioridade B: Se houver poucas opções no local exato, expanda para num raio de 5km, MAS VOCÊ DEVE EXPLICITAR QUE É VIZINHO. (Marque matchType="NEARBY")
+        3. HIERARQUIA DE RELEVÂNCIA (ESSENCIAL PARA VARREDURA):
+           - O usuário quer mapear a região. Priorize as 'Âncoras Comerciais' que geram fluxo.
+           - PRIORIDADE 1: Supermercados, Farmácias, Postos de Gasolina, Padarias movimentadas.
+           - PRIORIDADE 2: Serviços essenciais (Oficinas, Salões, Restaurantes).
+           - PRIORIDADE 3: Outros comércios variados.
+           - NÃO foque em apenas um nicho. Liste diversidade.
+        4. Encontre ${currentBatchSize} empresas variadas seguindo essa hierarquia.
       `;
     } else {
       promptTask = `
-        1. Pesquise por empresas do segmento "${segment}" na região de "${region}".
-        2. Encontre EXATAMENTE ${currentBatchSize} candidatos.
-        3. IMPORTANTE: NÃO inclua estas empresas: [${exclusionList}].
+        1. BUSCA FOCADA: Empresas de "${segment}" em "${region}".
+        2. HIERARQUIA DE LOCALIZAÇÃO (STRICT):
+           - Tente encontrar empresas NO BAIRRO/RUA ESPECIFICADO. (matchType="EXACT")
+           - SE (e somente se) houver escassez no local exato, busque na cidade vizinha ou bairros próximos. (matchType="NEARBY")
+           - DEIXE CLARO no endereço se for outra cidade.
+        3. Encontre ${currentBatchSize} resultados.
       `;
     }
 
     const prompt = `
-      Atue como um agente de Business Intelligence Sênior e Analista de Território.
+      Atue como um Especialista em Geomarketing e Verificação de Dados.
       
-      TAREFA:
+      OBJETIVO:
       ${promptTask}
       
-      5. INVESTIGAÇÃO PROFUNDA DE ATIVIDADE (Crucial):
-         - Vasculhe snippets de redes sociais (Instagram, LinkedIn, Facebook).
-         - Procure por DATAS EXATAS de postagens recentes (Ex: "12/10/2024").
-         - Identifique o TIPO de conteúdo (ex: "Post sobre evento", "Oferta de emprego", "Mudança de cardápio", "Resposta a review").
-         - Se houver reviews recentes no Google Maps, cite a data do último review.
+      5. EXCLUSÃO: Não repita estas empresas: [${exclusionList}].
       
-      6. FILTRE: Apenas negócios operantes.
-      7. CLASSIFIQUE a categoria específica.
-
-      FORMATO DE SAÍDA:
-      Retorne APENAS um Array JSON válido.
-      ESTIME AS COORDENADAS (lat/lng) para plotagem.
-      PRIORIZE NÚMEROS DE CELULAR/WHATSAPP no campo "phone".
+      6. VERIFICAÇÃO DE ATIVIDADE:
+         - Busque datas recentes de posts/reviews para calcular 'daysSinceLastActivity'.
+         - Se 'daysSinceLastActivity' for < 30, considere 'ACTIVE'.
       
-      Exemplo de Objeto:
+      7. FORMATO DE SAÍDA JSON OBRIGATÓRIO:
+      Retorne um Array JSON.
+      
+      Campos obrigatórios:
+      - matchType: "EXACT" (se for no local pedido) ou "NEARBY" (se for expansão de raio).
+      - address: Endereço completo.
+      - trustScore: 0 a 100 baseado na quantidade de evidências encontradas.
+      
+      Exemplo:
       {
-        "name": "Nome da Empresa",
-        "address": "Endereço Completo",
-        "phone": "(XX) 9XXXX-XXXX", // Priorize celular
-        "website": "url ou null",
-        "socialLinks": ["url1", "url2"],
-        "lastActivityEvidence": "Post no Instagram em 15/10/24 sobre 'Promoção de Primavera'", // SEJA ESPECÍFICO COM DATAS E TEMAS
-        "daysSinceLastActivity": 2, // Calcule baseado na evidência encontrada
-        "trustScore": 85,
-        "category": "Categoria Específica",
-        "status": "Verificado", 
-        "lat": -23.55,
-        "lng": -46.63
+        "name": "Supermercado Exemplo",
+        "address": "Av. Principal, 100, Bairro Tal, Cidade - UF",
+        "phone": "(11) ...",
+        "matchType": "EXACT", 
+        "category": "Supermercado",
+        "status": "Verificado",
+        "lat": -23.5, "lng": -46.6,
+        "daysSinceLastActivity": 2,
+        "socialLinks": [],
+        "website": null,
+        "lastActivityEvidence": "Ofertas da semana postadas ontem no Facebook"
       }
     `;
 
@@ -288,7 +285,7 @@ export const fetchAndAnalyzeBusinesses = async (
       const batchData = cleanAndParseJSON(rawText);
 
       if (!batchData || batchData.length === 0) {
-        onProgress("IA processando dados... (Tentando rotas alternativas)");
+        onProgress("Expandindo raio de busca...");
         if (attempts >= maxLoops) break;
         continue;
       }
@@ -305,16 +302,16 @@ export const fetchAndAnalyzeBusinesses = async (
            
            const address = item.address || "Endereço Desconhecido";
            const name = item.name || "Nome Desconhecido";
-           
-           // Verifica se é prospect
            const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
            
-           // Gerar link de whatsapp
            const whatsappLink = getWhatsAppUrl(item.phone, name);
            const finalSocialLinks = Array.isArray(item.socialLinks) ? item.socialLinks : [];
-           
-           if (whatsappLink) {
-             finalSocialLinks.unshift(whatsappLink);
+           if (whatsappLink) finalSocialLinks.unshift(whatsappLink);
+
+           // Normalizar matchType
+           let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
+           if (item.matchType === 'NEARBY' || item.matchType === 'CITY_WIDE') {
+             finalMatchType = 'NEARBY';
            }
 
            const entity: BusinessEntity = {
@@ -332,69 +329,48 @@ export const fetchAndAnalyzeBusinesses = async (
             lat: typeof item.lat === 'number' ? item.lat : undefined,
             lng: typeof item.lng === 'number' ? item.lng : undefined,
             isProspect: isSaved,
-            pipelineStage: 'new'
+            pipelineStage: 'new',
+            matchType: finalMatchType
           };
           
           batchEntities.push(entity);
         }
       }
 
-      // STREAMING: Enviar resultados deste lote IMEDIATAMENTE para a UI
       if (batchEntities.length > 0) {
         allEntities.push(...batchEntities);
-        onBatchResults(batchEntities); // Callback para App.tsx
+        onBatchResults(batchEntities); 
       }
 
       if (newCount === 0 && attempts > 1) {
-        onProgress("Varredura local concluída.");
         break;
       }
       
-      await wait(500); // Delay reduzido para streaming mais fluido
+      await wait(500); 
 
     } catch (error: any) {
       console.warn(`Erro no lote ${attempts}:`, error);
-      if (allEntities.length > 0) {
-        onProgress("Finalizando com dados parciais...");
-        break; 
-      }
-      // Se falhar tudo no primeiro lote, lança erro
+      if (allEntities.length > 0) break; 
       if (allEntities.length === 0 && attempts === 1) {
-          throw new Error("Não foi possível conectar à Inteligência Artificial. Verifique sua chave API ou tente novamente.");
+          throw new Error("Falha na conexão com a IA.");
       }
     }
   }
 
-  onProgress(`Concluído! ${allEntities.length} empresas encontradas.`);
-  
-  if (allEntities.length > 0) {
-    searchCache.set(cacheKey, allEntities);
-  }
+  onProgress(`Concluído! ${allEntities.length} resultados.`);
+  if (allEntities.length > 0) searchCache.set(cacheKey, allEntities);
   
   return allEntities;
 };
 
 export const generateOutreachEmail = async (business: BusinessEntity): Promise<string> => {
-  if (!apiKey) {
-    throw new Error("Chave API não configurada.");
-  }
+  if (!apiKey) throw new Error("Chave API não configurada.");
 
   const prompt = `
-    Atue como um especialista em Copywriting B2B.
-    Escreva um "Cold Email" (prospecção) curto e persuasivo para:
-    
-    Empresa: ${business.name}
-    Ramo: ${business.category}
-    Evidência Recente: ${business.lastActivityEvidence}
-    
-    Estrutura:
-    1. Assunto (Curto e intrigante)
-    2. Hook (Use a evidência recente para mostrar que pesquisou sobre eles)
-    3. Proposta de valor sutil
-    4. CTA (Pergunta rápida para resposta sim/não)
-    
-    Tom de voz: Profissional, mas conversacional. Evite clichês de marketing.
-    Retorne apenas o texto do e-mail.
+    Escreva um "Cold Email" B2B para: ${business.name} (${business.category}).
+    Evidência: ${business.lastActivityEvidence}.
+    Objetivo: Oferecer parceria.
+    Seja breve, 3 parágrafos curtos.
   `;
 
   try {
@@ -402,9 +378,8 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
       model: "gemini-2.5-flash",
       contents: prompt,
     });
-    return response.text || "Não foi possível gerar o e-mail.";
+    return response.text || "Erro ao gerar texto.";
   } catch (error) {
-    console.error("Erro na geração de e-mail:", error);
-    return "Erro ao conectar com a IA.";
+    return "Erro de conexão.";
   }
 };

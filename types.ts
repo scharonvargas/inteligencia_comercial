@@ -22,6 +22,7 @@ export interface BusinessEntity {
   lng?: number;
   isProspect?: boolean; // Novo campo para controle de favoritos
   pipelineStage?: string;
+  matchType?: 'EXACT' | 'NEARBY'; // Indica se é no local exato ou expansão por proximidade
 }
 
 export interface SearchParams {
