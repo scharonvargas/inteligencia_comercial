@@ -63,7 +63,7 @@ function getWhatsAppUrl(phone: string | null, companyName: string): string | nul
 }
 
 /**
- * Parser JSON Robusto v7 (URL Safe Edition)
+ * Parser JSON Robusto v8 (URL Safe & Fault Tolerant)
  * Lida com URLs sem aspas, URLs quebradas, comentários e múltiplos objetos.
  */
 function cleanAndParseJSON(text: string): any[] {
@@ -74,9 +74,8 @@ function cleanAndParseJSON(text: string): any[] {
   // 1. Limpeza básica de Markdown
   let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
 
-  // 2. TOKENIZAÇÃO DE URLS
+  // 2. TOKENIZAÇÃO DE URLS (Proteção contra parser)
   // Substitui http:// e https:// por tokens seguros para evitar conflito com comentários //
-  // e facilitar a identificação de URLs sem aspas.
   const HTTP_TOKEN = '___HTTP_PROTO___';
   const HTTPS_TOKEN = '___HTTPS_PROTO___';
   
@@ -88,7 +87,7 @@ function cleanAndParseJSON(text: string): any[] {
   cleanText = cleanText.replace(/\/\/.*$/gm, '');
 
   // 4. Corrigir URLs sem aspas (Erro comum da IA: "website": ___HTTPS_PROTO___www.site.com,)
-  // Procura por chave ":" seguida de espaço opcional e um dos tokens, até encontrar vírgula ou fechamento
+  // Procura por chave ":" seguida de espaço opcional e um dos tokens
   cleanText = cleanText.replace(/:\s*(___HTTPS_PROTO___[^\s,}\]]+|___HTTP_PROTO___[^\s,}\]]+)/g, ': "$1"');
 
   // 5. Restaurar URLs (reverter tokens)
@@ -96,40 +95,75 @@ function cleanAndParseJSON(text: string): any[] {
     .replace(new RegExp(HTTPS_TOKEN, 'g'), 'https://')
     .replace(new RegExp(HTTP_TOKEN, 'g'), 'http://');
 
-  // 6. Tentar parse direto (Caminho Feliz)
+  // 6. Normalização de Streams de Objetos (JSON Lines ou objetos concatenados)
+  // Transforma `} {` ou `}\n{` em `},{` para formar um array válido se envelopado
+  cleanText = cleanText.replace(/}\s*{/g, '},{');
+
+  // 7. Tentar parse direto como Array (Caminho Feliz)
   try {
-    const result = JSON.parse(cleanText);
+    // Se não começar com [, tenta envelopar
+    const textToParse = cleanText.trim().startsWith('[') ? cleanText : `[${cleanText}]`;
+    const result = JSON.parse(textToParse);
     return Array.isArray(result) ? result : [result];
   } catch (e) {
-    // Falha silenciosa no caminho feliz, prossegue para heurística
+    // Falha silenciosa no caminho feliz, prossegue para heurística de extração
   }
 
-  // 7. ESTRATÉGIA DE RECUPERAÇÃO DE BLOCOS
-  // Se o JSON inteiro falhou, tentamos extrair objetos individuais { ... }
+  // 8. ESTRATÉGIA DE EXTRAÇÃO CIRÚRGICA DE BLOCOS
+  // Se o JSON inteiro estiver malformado, extraímos cada objeto {...} válido individualmente.
   const objects: any[] = [];
-  
-  // Regex simples para capturar blocos entre { e }. 
-  // Nota: Não lida perfeitamente com objetos aninhados complexos se as chaves falharem, 
-  // mas funciona bem para listas planas de leads como as que pedimos.
-  // O pattern procura { ... } de forma não gulosa.
-  const objectPattern = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
-  
-  const matches = cleanText.match(objectPattern);
-  
-  if (matches) {
-    for (const match of matches) {
-      try {
-        // Tenta limpar erros comuns DENTRO do objeto
-        let objStr = match;
-        // Remove vírgula final antes do fechamento }
-        objStr = objStr.replace(/,(\s*})/g, '$1');
-        // Adiciona aspas em chaves se faltar (ex: name: "Valor" -> "name": "Valor")
-        objStr = objStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)(\s*:)/g, '$1"$2"$3');
-        
-        const obj = JSON.parse(objStr);
-        objects.push(obj);
-      } catch (err) {
-        // Objeto irrecuperável, pula
+  let braceDepth = 0;
+  let currentObjStr = '';
+  let inString = false;
+  let isEscaped = false;
+
+  for (let i = 0; i < cleanText.length; i++) {
+    const char = cleanText[i];
+    
+    if (inString) {
+      if (char === '\\' && !isEscaped) {
+        isEscaped = true;
+      } else if (char === '"' && !isEscaped) {
+        inString = false;
+      } else {
+        isEscaped = false;
+      }
+      currentObjStr += char;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      currentObjStr += char;
+      continue;
+    }
+
+    if (char === '{') {
+      if (braceDepth === 0) currentObjStr = ''; // Começa novo objeto
+      braceDepth++;
+    }
+
+    if (braceDepth > 0) {
+      currentObjStr += char;
+    }
+
+    if (char === '}') {
+      braceDepth--;
+      if (braceDepth === 0) {
+        // Fim do objeto, tenta parsear este bloco isolado
+        try {
+          // Limpezas extras dentro do bloco isolado
+          let safeObjStr = currentObjStr;
+          // Corrige chaves sem aspas (ex: name: "Valor" -> "name": "Valor")
+          safeObjStr = safeObjStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)(\s*:)/g, '$1"$2"$3');
+          // Remove vírgulas trailing (ex: "a":1, } -> "a":1 })
+          safeObjStr = safeObjStr.replace(/,(\s*})/g, '$1');
+          
+          const obj = JSON.parse(safeObjStr);
+          objects.push(obj);
+        } catch (err) {
+          // Se falhar, tenta recuperar o que der ou ignora
+        }
       }
     }
   }
@@ -278,14 +312,16 @@ export const fetchAndAnalyzeBusinesses = async (
              > "EXACT": Endereço contém a rua/bairro pesquisado.
              > "NEARBY": Apenas se não houver mais opções no local exato, busque num raio expandido (ruas transversais ou vizinhas).
 
-        3. HIERARQUIA DE TIPO DE NEGÓCIO:
-           - CENÁRIO A (Se a busca for por RUA/AVENIDA):
+        3. HIERARQUIA DE TIPO DE NEGÓCIO (ESSENCIAL VS NICHO):
+           - CENÁRIO A (Se a busca for por RUA/AVENIDA Específica):
              > Liste QUALQUER negócio ativo nessa via (Lojas, Serviços, Escritórios). A fidelidade ao endereço é mais importante que o tipo.
-           - CENÁRIO B (Se a busca for por BAIRRO/CIDADE):
-             > Priorize "Âncoras Comerciais" de alto fluxo: Supermercados, Farmácias, Postos, Bancos, Padarias.
-             > Objetivo: Mapear os pontos principais do bairro antes de listar negócios obscuros.
+           - CENÁRIO B (Se a busca for por BAIRRO/CIDADE/REGIÃO AMPLA):
+             > PRIORIDADE 1 (Alta Relevância & Grande Circulação): Liste PRIMEIRO serviços essenciais como Supermercados, Farmácias, Postos de Combustível, Padarias, Bancos, Lotéricas e Correios.
+             > PRIORIDADE 2 (Comércio Geral): Restaurantes, Lojas de Roupas, Academias, Salões de Beleza.
+             > PRIORIDADE 3 (Nichos): Serviços especializados, escritórios, indústrias.
+             > Lógica: "Se eu me mudasse para este bairro hoje, quais são os comércios vitais que eu precisaria conhecer primeiro?" Comece por eles.
 
-        4. Encontre EXATAMENTE ${currentBatchSize} empresas variadas seguindo essa hierarquia.
+        4. Encontre EXATAMENTE ${currentBatchSize} empresas variadas seguindo essa hierarquia (Focando na Prioridade 1 se for o primeiro lote).
       `;
     } else {
       promptTask = `
@@ -309,6 +345,7 @@ export const fetchAndAnalyzeBusinesses = async (
       6. VERIFICAÇÃO DE ATIVIDADE:
          - Busque datas recentes de posts/reviews para calcular 'daysSinceLastActivity'.
          - Se 'daysSinceLastActivity' for < 30, considere 'ACTIVE'.
+         - Priorize encontrar o telefone celular (WhatsApp) se disponível.
       
       7. FORMATO DE SAÍDA JSON OBRIGATÓRIO:
       Retorne um Array JSON com ${currentBatchSize} objetos.
@@ -320,16 +357,16 @@ export const fetchAndAnalyzeBusinesses = async (
       
       Exemplo:
       {
-        "name": "Supermercado Exemplo",
+        "name": "Supermercado Âncora",
         "address": "Av. Principal, 100, Bairro Tal, Cidade - UF",
-        "phone": "(11) ...",
+        "phone": "(11) 99999-9999",
         "matchType": "EXACT", 
         "category": "Supermercado",
         "status": "Verificado",
         "lat": -23.5, "lng": -46.6,
         "daysSinceLastActivity": 2,
-        "socialLinks": [],
-        "website": "https://www.site.com",
+        "socialLinks": ["https://instagram.com/mercado"],
+        "website": "https://www.mercado.com",
         "lastActivityEvidence": "Ofertas da semana postadas ontem no Facebook"
       }
     `;
@@ -360,9 +397,13 @@ export const fetchAndAnalyzeBusinesses = async (
            const name = item.name || "Nome Desconhecido";
            const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
            
+           // Validação robusta de links
+           const socialLinksRaw = Array.isArray(item.socialLinks) ? item.socialLinks : [];
+           const validSocialLinks = socialLinksRaw.filter((l: any) => typeof l === 'string' && l.trim().length > 0 && (l.startsWith('http') || l.startsWith('www')));
+
+           // Gerar link do WhatsApp se houver telefone
            const whatsappLink = getWhatsAppUrl(item.phone, name);
-           const finalSocialLinks = Array.isArray(item.socialLinks) ? item.socialLinks.filter((l: any) => typeof l === 'string' && l.length > 0) : [];
-           if (whatsappLink) finalSocialLinks.unshift(whatsappLink);
+           if (whatsappLink) validSocialLinks.unshift(whatsappLink);
 
            // Normalizar matchType
            let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
@@ -375,8 +416,8 @@ export const fetchAndAnalyzeBusinesses = async (
             name: name,
             address: address,
             phone: item.phone || null,
-            website: item.website || null,
-            socialLinks: finalSocialLinks,
+            website: (item.website && typeof item.website === 'string' && item.website.startsWith('http')) ? item.website : null,
+            socialLinks: validSocialLinks,
             lastActivityEvidence: item.lastActivityEvidence || "Sem dados recentes",
             daysSinceLastActivity: typeof item.daysSinceLastActivity === 'number' ? item.daysSinceLastActivity : -1,
             trustScore: typeof item.trustScore === 'number' ? item.trustScore : 50,
