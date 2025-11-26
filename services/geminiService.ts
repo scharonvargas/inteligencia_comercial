@@ -34,6 +34,14 @@ const pruneCache = () => {
 };
 
 /**
+ * Limpa todo o cache manualmente
+ */
+export const clearMemoryCache = () => {
+  searchCache.clear();
+  console.log("🧹 Cache em memória limpo manualmente.");
+};
+
+/**
  * Utilitário de espera (sleep)
  */
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -63,54 +71,60 @@ function getWhatsAppUrl(phone: string | null, companyName: string): string | nul
 }
 
 /**
- * Parser JSON Robusto v8 (URL Safe & Fault Tolerant)
- * Lida com URLs sem aspas, URLs quebradas, comentários e múltiplos objetos.
+ * Parser JSON Robusto v12 (Tokenização de URLs + Stream Support)
  */
 function cleanAndParseJSON(text: string): any[] {
-  if (!text || typeof text !== 'string' || text.trim().length === 0) {
-    return [];
-  }
+  if (!text || typeof text !== 'string') return [];
+  if (text.trim().length === 0) return [];
 
   // 1. Limpeza básica de Markdown
   let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
 
-  // 2. TOKENIZAÇÃO DE URLS (Proteção contra parser)
-  // Substitui http:// e https:// por tokens seguros para evitar conflito com comentários //
-  const HTTP_TOKEN = '___HTTP_PROTO___';
-  const HTTPS_TOKEN = '___HTTPS_PROTO___';
+  // 2. TOKENIZAÇÃO DE URLS
+  // Extrai URLs antes de qualquer manipulação para evitar quebras por // (comentários) ou falta de aspas.
+  const urlMap = new Map<string, string>();
+  let urlCounter = 0;
   
-  cleanText = cleanText
-    .replace(/https:\/\//gi, HTTPS_TOKEN)
-    .replace(/http:\/\//gi, HTTP_TOKEN);
+  // Regex para capturar URLs (http/https) até encontrar um delimitador JSON comum ou espaço
+  cleanText = cleanText.replace(/(https?:\/\/[^\s",}\]]+)/g, (match) => {
+    const token = `__URL_TOKEN_${urlCounter++}__`;
+    urlMap.set(token, match);
+    return token;
+  });
 
-  // 3. Remover comentários de linha (agora é seguro pois URLs estão tokenizadas)
+  // 3. Remover comentários de linha (// ...)
   cleanText = cleanText.replace(/\/\/.*$/gm, '');
 
-  // 4. Corrigir URLs sem aspas (Erro comum da IA: "website": ___HTTPS_PROTO___www.site.com,)
-  // Procura por chave ":" seguida de espaço opcional e um dos tokens
-  cleanText = cleanText.replace(/:\s*(___HTTPS_PROTO___[^\s,}\]]+|___HTTP_PROTO___[^\s,}\]]+)/g, ': "$1"');
+  // 4. Corrigir tokens sem aspas
+  // Caso: "key": __URL_TOKEN__ -> "key": "__URL_TOKEN__"
+  cleanText = cleanText.replace(/:\s*(__URL_TOKEN_\d+__)/g, ': "$1"');
+  // Caso: [ __URL_TOKEN__ ] -> [ "__URL_TOKEN__" ] (Arrays de links)
+  cleanText = cleanText.replace(/([\[,]\s*)(__URL_TOKEN_\d+__)/g, '$1"$2"');
 
-  // 5. Restaurar URLs (reverter tokens)
-  cleanText = cleanText
-    .replace(new RegExp(HTTPS_TOKEN, 'g'), 'https://')
-    .replace(new RegExp(HTTP_TOKEN, 'g'), 'http://');
+  // 5. Normalização de Streams de Objetos (} { -> } , {)
+  cleanText = cleanText.replace(/}\s*[\r\n]*\s*{/g, '},{');
 
-  // 6. Normalização de Streams de Objetos (JSON Lines ou objetos concatenados)
-  // Transforma `} {` ou `}\n{` em `},{` para formar um array válido se envelopado
-  cleanText = cleanText.replace(/}\s*{/g, '},{');
+  // 6. Remover Trailing Commas
+  cleanText = cleanText.replace(/,(\s*[}\]])/g, '$1');
 
-  // 7. Tentar parse direto como Array (Caminho Feliz)
+  // 7. Restaurar URLs
+  // Recoloca as URLs originais nos lugares dos tokens.
+  urlMap.forEach((url, token) => {
+    // Usa regex global para garantir que todas as ocorrências sejam substituídas
+    cleanText = cleanText.replace(new RegExp(token, 'g'), url);
+  });
+
+  // 8. Tentar Parse Direto (Caminho Feliz)
   try {
-    // Se não começar com [, tenta envelopar
     const textToParse = cleanText.trim().startsWith('[') ? cleanText : `[${cleanText}]`;
     const result = JSON.parse(textToParse);
     return Array.isArray(result) ? result : [result];
   } catch (e) {
-    // Falha silenciosa no caminho feliz, prossegue para heurística de extração
+    // Falha silenciosa, tenta o fallback
   }
 
-  // 8. ESTRATÉGIA DE EXTRAÇÃO CIRÚRGICA DE BLOCOS
-  // Se o JSON inteiro estiver malformado, extraímos cada objeto {...} válido individualmente.
+  // 9. EXTRAÇÃO CIRÚRGICA DE BLOCOS (Fallback Robusto)
+  // Analisa a string caractere por caractere para extrair objetos JSON válidos
   const objects: any[] = [];
   let braceDepth = 0;
   let currentObjStr = '';
@@ -121,13 +135,9 @@ function cleanAndParseJSON(text: string): any[] {
     const char = cleanText[i];
     
     if (inString) {
-      if (char === '\\' && !isEscaped) {
-        isEscaped = true;
-      } else if (char === '"' && !isEscaped) {
-        inString = false;
-      } else {
-        isEscaped = false;
-      }
+      if (char === '\\' && !isEscaped) isEscaped = true;
+      else if (char === '"' && !isEscaped) inString = false;
+      else isEscaped = false;
       currentObjStr += char;
       continue;
     }
@@ -139,7 +149,7 @@ function cleanAndParseJSON(text: string): any[] {
     }
 
     if (char === '{') {
-      if (braceDepth === 0) currentObjStr = ''; // Começa novo objeto
+      if (braceDepth === 0) currentObjStr = ''; 
       braceDepth++;
     }
 
@@ -150,20 +160,19 @@ function cleanAndParseJSON(text: string): any[] {
     if (char === '}') {
       braceDepth--;
       if (braceDepth === 0) {
-        // Fim do objeto, tenta parsear este bloco isolado
         try {
-          // Limpezas extras dentro do bloco isolado
           let safeObjStr = currentObjStr;
-          // Corrige chaves sem aspas (ex: name: "Valor" -> "name": "Valor")
+          // Correção de chaves sem aspas dentro do bloco extraído
           safeObjStr = safeObjStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)(\s*:)/g, '$1"$2"$3');
-          // Remove vírgulas trailing (ex: "a":1, } -> "a":1 })
+          // Remover vírgulas finais dentro do bloco
           safeObjStr = safeObjStr.replace(/,(\s*})/g, '$1');
           
           const obj = JSON.parse(safeObjStr);
           objects.push(obj);
         } catch (err) {
-          // Se falhar, tenta recuperar o que der ou ignora
+          // Bloco ignorado se for inválido
         }
+        currentObjStr = '';
       }
     }
   }
@@ -189,7 +198,7 @@ async function generateContentWithRetry(
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
-          temperature: isBroadSearch ? 0.7 : 0.4, 
+          temperature: isBroadSearch ? 0.6 : 0.4, 
         },
       });
       return response;
@@ -220,26 +229,23 @@ export const fetchAndAnalyzeBusinesses = async (
     throw new Error("A chave da API está ausente. Selecione um projeto Google Cloud válido com faturamento ativado.");
   }
 
-  // 1. Limpeza Proativa do Cache (Remove itens antigos antes de começar)
+  // 1. Limpeza Proativa do Cache
   pruneCache();
 
   const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
   
-  // 2. Verificação de Cache com Expiração Específica
+  // 2. Verificação de Cache
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
     const now = Date.now();
     
-    // Verifica se o cache ainda é válido (TTL)
     if (now - entry.timestamp < CACHE_TTL_MS) {
       onProgress("⚡ Recuperando resultados do cache instantâneo...");
       const cachedData = entry.data;
-      await wait(300); // Pequeno delay visual
+      await wait(300); 
       onBatchResults(cachedData);
       return cachedData;
     } else {
-      // Expira o cache antigo
-      console.log(`Cache expirado para: ${cacheKey}`);
       searchCache.delete(cacheKey);
     }
   }
@@ -253,16 +259,12 @@ export const fetchAndAnalyzeBusinesses = async (
     console.warn("Não foi possível carregar prospects do banco:", e);
   }
 
-  // --- ESTRATÉGIA DE FAST START ---
-  // Lote 1: Apenas 5 itens (muito rápido para primeira pintura)
-  // Lotes seguintes: 25 itens (maior eficiência de tokens)
   const INITIAL_BATCH_SIZE = 5;
   const SUBSEQUENT_BATCH_SIZE = 25;
 
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
   let attempts = 0;
-  // Aumentamos o limite de loops de segurança
   const maxLoops = Math.ceil(maxResults / 10) + 5; 
 
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
@@ -274,28 +276,18 @@ export const fetchAndAnalyzeBusinesses = async (
   while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
     
-    // Determina o tamanho do lote dinamicamente
     const isFirstBatch = allEntities.length === 0;
     const targetBatchSize = isFirstBatch ? INITIAL_BATCH_SIZE : SUBSEQUENT_BATCH_SIZE;
     
     const remaining = maxResults - allEntities.length;
     const currentBatchSize = Math.min(targetBatchSize, remaining);
     
-    // Lista de exclusão para evitar duplicatas nos próximos prompts
     const exclusionList = Array.from(seenNames).slice(-50).join(", ");
 
     if (isFirstBatch) {
-       onProgress("🚀 Início Rápido: Buscando primeiros resultados...");
+       onProgress("🚀 Início Rápido: Buscando primeiros resultados essenciais...");
     } else {
        onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`);
-    }
-
-    let geoContext = `na região de "${region}"`;
-    if (coordinates) {
-      geoContext = `
-        LOCALIZAÇÃO EXATA: Latitude ${coordinates.lat}, Longitude ${coordinates.lng}.
-        INSTRUÇÃO CRÍTICA: O usuário deseja resultados NESTE PONTO ou num raio máximo de 2km.
-      `;
     }
 
     // PROMPT REFINADO
@@ -303,32 +295,33 @@ export const fetchAndAnalyzeBusinesses = async (
     if (isBroadSearch) {
       promptTask = `
         1. VARREDURA GEOGRÁFICA EM: ${region}.
-        ${coordinates ? `USAR COORDENADAS GPS: Lat ${coordinates.lat}, Lng ${coordinates.lng} como CENTRO.` : ''}
+        ${coordinates ? `CENTRO EXATO: Lat ${coordinates.lat}, Lng ${coordinates.lng}.` : ''}
 
-        2. LÓGICA DE PRIORIZAÇÃO GEOGRÁFICA (CRÍTICO):
-           - O usuário quer empresas EXATAMENTE nesta localização: "${region}".
-           - TENTATIVA #1 (Obrigatória): Busque exaustivamente por empresas cujo endereço contenha "${region}" (se for rua) ou esteja dentro do limite oficial (se for bairro).
-           - CLASSIFICAÇÃO 'matchType':
-             > "EXACT": Endereço contém a rua/bairro pesquisado.
-             > "NEARBY": Apenas se não houver mais opções no local exato, busque num raio expandido (ruas transversais ou vizinhas).
+        2. LÓGICA DE PRIORIZAÇÃO GEOGRÁFICA (STRICT):
+           - Se for nome de RUA/AVENIDA: Liste QUALQUER negócio com frente para esta via (matchType="EXACT").
+           - Se for BAIRRO/CIDADE: Priorize empresas de INFRAESTRUTURA VITAL.
 
-        3. HIERARQUIA DE TIPO DE NEGÓCIO (ESSENCIAL VS NICHO):
-           - CENÁRIO A (Se a busca for por RUA/AVENIDA Específica):
-             > Liste QUALQUER negócio ativo nessa via (Lojas, Serviços, Escritórios). A fidelidade ao endereço é mais importante que o tipo.
-           - CENÁRIO B (Se a busca for por BAIRRO/CIDADE/REGIÃO AMPLA):
-             > PRIORIDADE 1 (Alta Relevância & Grande Circulação): Liste PRIMEIRO serviços essenciais como Supermercados, Farmácias, Postos de Combustível, Padarias, Bancos, Lotéricas e Correios.
-             > PRIORIDADE 2 (Comércio Geral): Restaurantes, Lojas de Roupas, Academias, Salões de Beleza.
-             > PRIORIDADE 3 (Nichos): Serviços especializados, escritórios, indústrias.
-             > Lógica: "Se eu me mudasse para este bairro hoje, quais são os comércios vitais que eu precisaria conhecer primeiro?" Comece por eles.
+        3. HIERARQUIA DE RELEVÂNCIA PÚBLICA (CRÍTICO - SEGUIR RIGOROSAMENTE):
+           A lista de resultados deve ser composta OBRIGATORIAMENTE por:
+           > 80% (PRIORIDADE TOTAL) - INFRAESTRUTURA VITAL E ALTO FLUXO:
+             1. ALIMENTAÇÃO ESSENCIAL: Supermercados, Mercadinhos, Atacadistas, Padarias, Açougues.
+             2. SAÚDE & EMERGÊNCIA: Farmácias, Drogarias 24h, Clínicas Médicas Populares, Hospitais.
+             3. SERVIÇOS PÚBLICOS & UTILIDADES: Postos de Gasolina, Agências Bancárias, Lotéricas, Correios, Cartórios.
+             4. COMÉRCIO DE NECESSIDADE: Oficinas Mecânicas, Borracharias, Lojas de Material de Construção.
+           
+           > 20% (COMPLEMENTAR) - OUTROS:
+             - Restaurantes populares, Lojas de Roupas, Barbearias, Salões de Beleza.
+           
+           OBJETIVO: Criar um "Guia de Sobrevivência e Utilidade Pública" da região de "${region}". O usuário quer saber onde comprar comida, remédio e abastecer.
 
-        4. Encontre EXATAMENTE ${currentBatchSize} empresas variadas seguindo essa hierarquia (Focando na Prioridade 1 se for o primeiro lote).
+        4. Encontre EXATAMENTE ${currentBatchSize} empresas variadas seguindo essa hierarquia.
       `;
     } else {
       promptTask = `
         1. BUSCA FOCADA: Empresas de "${segment}" em "${region}".
         2. HIERARQUIA DE LOCALIZAÇÃO (STRICT):
            - Tente encontrar empresas NO BAIRRO/RUA ESPECIFICADO. (matchType="EXACT")
-           - SE (e somente se) houver escassez no local exato, busque na cidade vizinha ou bairros próximos. (matchType="NEARBY")
+           - SE (e somente se) houver escassez no local exato, busque na cidade vizinha ou bairros próximos. (matchType="NEARBY" se necessário)
            - DEIXE CLARO no endereço se for outra cidade.
         3. Encontre EXATAMENTE ${currentBatchSize} resultados.
       `;
@@ -342,8 +335,10 @@ export const fetchAndAnalyzeBusinesses = async (
       
       5. EXCLUSÃO: Não repita estas empresas: [${exclusionList}].
       
-      6. VERIFICAÇÃO DE ATIVIDADE:
-         - Busque datas recentes de posts/reviews para calcular 'daysSinceLastActivity'.
+      6. VERIFICAÇÃO DE ATIVIDADE E INFERÊNCIA INTELIGENTE:
+         - Busque datas recentes de posts/reviews.
+         - Se a informação exata não estiver disponível, TENTE INFERIR a atividade com base no contexto (ex: "Post sobre Volta às Aulas" = Jan/Fev 2024; "Promoção de Natal" = Dezembro).
+         - Em 'lastActivityEvidence', seja específico: "Post no Instagram sobre [Assunto] em [Mês/Ano]" ou "Review no Google Maps há 2 dias".
          - Se 'daysSinceLastActivity' for < 30, considere 'ACTIVE'.
          - Priorize encontrar o telefone celular (WhatsApp) se disponível.
       
@@ -357,7 +352,7 @@ export const fetchAndAnalyzeBusinesses = async (
       
       Exemplo:
       {
-        "name": "Supermercado Âncora",
+        "name": "Supermercado Exemplo",
         "address": "Av. Principal, 100, Bairro Tal, Cidade - UF",
         "phone": "(11) 99999-9999",
         "matchType": "EXACT", 
@@ -367,7 +362,7 @@ export const fetchAndAnalyzeBusinesses = async (
         "daysSinceLastActivity": 2,
         "socialLinks": ["https://instagram.com/mercado"],
         "website": "https://www.mercado.com",
-        "lastActivityEvidence": "Ofertas da semana postadas ontem no Facebook"
+        "lastActivityEvidence": "Post de ofertas de fim de semana publicado ontem no Instagram."
       }
     `;
 
@@ -397,15 +392,12 @@ export const fetchAndAnalyzeBusinesses = async (
            const name = item.name || "Nome Desconhecido";
            const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
            
-           // Validação robusta de links
            const socialLinksRaw = Array.isArray(item.socialLinks) ? item.socialLinks : [];
            const validSocialLinks = socialLinksRaw.filter((l: any) => typeof l === 'string' && l.trim().length > 0 && (l.startsWith('http') || l.startsWith('www')));
 
-           // Gerar link do WhatsApp se houver telefone
            const whatsappLink = getWhatsAppUrl(item.phone, name);
            if (whatsappLink) validSocialLinks.unshift(whatsappLink);
 
-           // Normalizar matchType
            let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
            if (item.matchType === 'NEARBY' || item.matchType === 'CITY_WIDE') {
              finalMatchType = 'NEARBY';
@@ -436,15 +428,13 @@ export const fetchAndAnalyzeBusinesses = async (
 
       if (batchEntities.length > 0) {
         allEntities.push(...batchEntities);
-        // Envia o lote imediatamente para a UI
         onBatchResults(batchEntities); 
       }
 
       if (newCount === 0 && attempts > 2) {
-        break; // Desiste se após 2 tentativas não vier nada novo
+        break; 
       }
       
-      // Pequeno delay para não bater rate limit se for muito rápido
       await wait(300); 
 
     } catch (error: any) {
@@ -458,7 +448,6 @@ export const fetchAndAnalyzeBusinesses = async (
 
   onProgress(`Concluído! ${allEntities.length} resultados.`);
   
-  // Salva no cache com o timestamp atual
   if (allEntities.length > 0) {
     searchCache.set(cacheKey, {
       timestamp: Date.now(),

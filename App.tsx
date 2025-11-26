@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { fetchAndAnalyzeBusinesses } from './services/geminiService';
+import { fetchAndAnalyzeBusinesses, clearMemoryCache } from './services/geminiService';
 import { BusinessEntity } from './types';
 import { ResultsTable } from './components/ResultsTable';
 import { ResultsMap } from './components/ResultsMap';
@@ -8,7 +8,7 @@ import { AddressAutocomplete } from './components/AddressAutocomplete';
 import { dbService } from './services/dbService';
 import { 
   Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info, 
-  LayoutList, KanbanSquare 
+  LayoutList, KanbanSquare, Trash2, Check
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -39,6 +39,9 @@ const App: React.FC = () => {
   
   // Status do Banco de Dados
   const [dbStatus, setDbStatus] = useState<'loading' | 'online' | 'offline'>('loading');
+  
+  // Estado para feedback de limpeza de cache
+  const [cacheCleaned, setCacheCleaned] = useState(false);
 
   const hasKey = !!process.env.API_KEY;
   const isSweepMode = segment.trim() === '';
@@ -143,6 +146,13 @@ const App: React.FC = () => {
     setRegion(val);
     // Só limpa coordenadas se o texto mudar drasticamente (opcional, aqui limpamos por segurança)
     // setSearchCoords(null); 
+  }, []);
+
+  // Handler para limpar cache
+  const handleClearCache = useCallback(() => {
+    clearMemoryCache();
+    setCacheCleaned(true);
+    setTimeout(() => setCacheCleaned(false), 2000);
   }, []);
 
   return (
@@ -364,14 +374,31 @@ const App: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800 bg-slate-900 mt-auto py-4 text-center text-slate-500 text-xs flex justify-between px-8">
+      <footer className="border-t border-slate-800 bg-slate-900 mt-auto py-4 text-center text-slate-500 text-xs flex justify-between px-8 items-center">
         <p>&copy; {new Date().getFullYear()} VeriCorp. Inteligência gerada por IA.</p>
-        <div className="flex items-center gap-2">
-          <span>Status BD:</span>
-          <span className={`flex items-center gap-1 ${dbStatus === 'online' ? 'text-emerald-500' : dbStatus === 'loading' ? 'text-slate-500' : 'text-amber-500'}`}>
-             <div className={`w-2 h-2 rounded-full ${dbStatus === 'online' ? 'bg-emerald-500' : dbStatus === 'loading' ? 'bg-slate-500' : 'bg-amber-500'}`} />
-             {dbStatus === 'online' ? 'Online (Supabase)' : dbStatus === 'loading' ? 'Verificando...' : 'Modo Offline (Local)'}
-          </span>
+        
+        <div className="flex items-center gap-4">
+          {/* Botão de Limpar Cache */}
+          <button 
+             onClick={handleClearCache}
+             className={`flex items-center gap-1.5 transition-colors px-2 py-1 rounded border ${
+                cacheCleaned 
+                  ? 'text-emerald-500 border-emerald-500/30 bg-emerald-500/10' 
+                  : 'text-slate-500 border-slate-800 hover:text-slate-300 hover:bg-slate-800'
+             }`}
+             title="Limpar memória de busca"
+          >
+             {cacheCleaned ? <Check size={12} /> : <Trash2 size={12} />}
+             <span>{cacheCleaned ? 'Cache Limpo!' : 'Limpar Cache'}</span>
+          </button>
+
+          <div className="flex items-center gap-2">
+            <span>Status BD:</span>
+            <span className={`flex items-center gap-1 ${dbStatus === 'online' ? 'text-emerald-500' : dbStatus === 'loading' ? 'text-slate-500' : 'text-amber-500'}`}>
+              <div className={`w-2 h-2 rounded-full ${dbStatus === 'online' ? 'bg-emerald-500' : dbStatus === 'loading' ? 'bg-slate-500' : 'bg-amber-500'}`} />
+              {dbStatus === 'online' ? 'Online (Supabase)' : dbStatus === 'loading' ? 'Verificando...' : 'Modo Offline (Local)'}
+            </span>
+          </div>
         </div>
       </footer>
     </div>

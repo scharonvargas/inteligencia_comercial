@@ -17,6 +17,7 @@ const COLUMNS = [
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange }) => {
   const [activeCol, setActiveCol] = useState<string | null>(null);
+  const [sourceCol, setSourceCol] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   
   // Organiza os dados em colunas
@@ -41,16 +42,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
   }, [data]);
 
   // Handlers de Drag and Drop
-  const handleDragStart = (e: React.DragEvent, id: string) => {
+  const handleDragStart = (e: React.DragEvent, id: string, colId: string) => {
     setDraggedId(id);
+    setSourceCol(colId);
     e.dataTransfer.setData('text/plain', id);
     e.dataTransfer.effectAllowed = 'move';
-    // Define uma imagem de arraste transparente se quiser customizar (opcional)
   };
 
   const handleDragEnd = () => {
     setDraggedId(null);
     setActiveCol(null);
+    setSourceCol(null);
   };
 
   const handleDragOver = (e: React.DragEvent, colId: string) => {
@@ -62,8 +64,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
-    // Apenas reseta se realmente sair do container da coluna (logica complexa em React puro)
-    // Simplificado: deixamos o dragOver gerenciar o activeCol, e o dragEnd limpar.
+    // Mantemos o activeCol até que o dragEnd limpe ou entre em outra coluna
   };
 
   const handleDrop = (e: React.DragEvent, targetStage: string) => {
@@ -74,6 +75,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
     }
     setActiveCol(null);
     setDraggedId(null);
+    setSourceCol(null);
   };
 
   return (
@@ -85,9 +87,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
         return (
           <div 
             key={col.id} 
-            className={`flex-1 min-w-[300px] flex flex-col rounded-xl border transition-all duration-200 ${
+            className={`flex-1 min-w-[300px] flex flex-col rounded-xl border transition-all duration-300 ${
               isActive 
-                ? 'bg-slate-800/80 border-brand-500 shadow-[0_0_15px_rgba(14,165,233,0.15)] ring-1 ring-brand-500/50' 
+                ? 'bg-slate-800/90 border-brand-500 shadow-[0_0_25px_rgba(14,165,233,0.15)] ring-2 ring-brand-500/50 scale-[1.01]' 
                 : 'bg-slate-900/50 border-slate-800'
             }`}
             onDragOver={(e) => handleDragOver(e, col.id)}
@@ -107,29 +109,34 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
             </div>
 
             {/* Column Body */}
-            <div className={`flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar transition-colors ${
+            <div className={`flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar transition-all duration-300 ${
               isActive ? 'bg-brand-500/5' : ''
             }`}>
               {columnsData[col.id]?.map(biz => {
                 const isDragging = draggedId === biz.id;
+                // Blur siblings: Se algo está sendo arrastado, esta é a coluna de origem, e este não é o card arrastado
+                const isSiblingInSource = draggedId !== null && sourceCol === col.id && !isDragging;
                 
                 return (
                   <div
                     key={biz.id}
                     draggable
-                    onDragStart={(e) => handleDragStart(e, biz.id)}
+                    onDragStart={(e) => handleDragStart(e, biz.id, col.id)}
                     onDragEnd={handleDragEnd}
                     className={`
-                      relative p-4 rounded-lg border shadow-sm cursor-grab active:cursor-grabbing transition-all group
+                      relative p-4 rounded-lg border cursor-grab active:cursor-grabbing transition-all duration-300 group
                       ${isDragging 
-                        ? 'opacity-40 grayscale border-dashed border-slate-500 bg-slate-800/50 scale-95' 
-                        : 'bg-slate-800 border-slate-700 hover:border-brand-500/50 hover:shadow-md hover:-translate-y-0.5'
+                        ? 'opacity-40 grayscale border-dashed border-slate-500 bg-slate-800/30 shadow-inner scale-95' 
+                        : 'bg-slate-800 border-slate-700 hover:border-brand-500/50 hover:shadow-lg hover:-translate-y-1'
                       }
+                      ${isSiblingInSource ? 'blur-[1.5px] opacity-60 scale-95 grayscale-[0.3]' : ''}
                     `}
                   >
                     <div className="flex justify-between items-start mb-2">
-                      <h4 className="font-bold text-slate-200 text-sm line-clamp-2 pr-4">{biz.name}</h4>
-                      <GripVertical size={16} className={`shrink-0 ${isDragging ? 'text-slate-600' : 'text-slate-600 group-hover:text-brand-500'}`} />
+                      <h4 className={`font-bold text-sm line-clamp-2 pr-4 transition-colors ${isDragging ? 'text-slate-500' : 'text-slate-200'}`}>
+                        {biz.name}
+                      </h4>
+                      <GripVertical size={16} className={`shrink-0 ${isDragging ? 'text-slate-700' : 'text-slate-600 group-hover:text-brand-500'}`} />
                     </div>
                     
                     <p className="text-xs text-slate-500 mb-3 line-clamp-1">{biz.category}</p>
@@ -157,7 +164,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
                               rel="noopener noreferrer"
                               className="text-slate-400 hover:text-emerald-400 transition-colors p-1 hover:bg-slate-700 rounded"
                               title="WhatsApp"
-                              onMouseDown={(e) => e.stopPropagation()} // Impede o drag ao clicar no link
+                              onMouseDown={(e) => e.stopPropagation()} 
                             >
                               <Phone size={14} />
                             </a>
@@ -188,14 +195,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
               
               {/* Empty State / Drop Placeholder */}
               {isEmpty && (
-                <div className={`h-full flex flex-col items-center justify-center transition-opacity min-h-[120px] rounded-lg border-2 border-dashed ${
-                   isActive ? 'border-brand-500/30 bg-brand-500/5 opacity-100' : 'border-slate-800 opacity-50'
+                <div className={`h-full flex flex-col items-center justify-center transition-all duration-300 min-h-[120px] rounded-lg border-2 border-dashed ${
+                   isActive 
+                    ? 'border-brand-500 bg-brand-500/10 opacity-100 scale-105 shadow-inner' 
+                    : 'border-slate-800 opacity-50 hover:opacity-75'
                 }`}>
-                    <div className={`p-3 rounded-full mb-2 ${isActive ? 'bg-brand-500/20 text-brand-400' : 'bg-slate-800 text-slate-600'}`}>
+                    <div className={`p-3 rounded-full mb-2 transition-transform duration-300 ${isActive ? 'bg-brand-500/20 text-brand-400 scale-110' : 'bg-slate-800 text-slate-600'}`}>
                       {isActive ? <ArrowRight size={24} className="animate-pulse" /> : <AlertCircle size={24} />}
                     </div>
-                    <span className={`text-xs ${isActive ? 'text-brand-300' : 'text-slate-500'}`}>
-                       {isActive ? 'Solte aqui' : 'Arraste cards para cá'}
+                    <span className={`text-xs font-medium ${isActive ? 'text-brand-300' : 'text-slate-500'}`}>
+                       {isActive ? 'Solte para mover' : 'Arraste para cá'}
                     </span>
                 </div>
               )}

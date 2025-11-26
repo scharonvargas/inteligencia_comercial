@@ -8,7 +8,7 @@ import L from 'leaflet';
 import { 
   ExternalLink, Phone, Globe, AlertTriangle, CheckCircle, Download, 
   Activity, ChevronDown, ChevronUp, Calendar, Instagram, Facebook, Linkedin,
-  Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X
+  Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X, Filter
 } from 'lucide-react';
 
 // Workaround for react-window import in ESM/CDN environments
@@ -26,7 +26,7 @@ interface ResultsTableProps {
   data: BusinessEntity[];
 }
 
-type ActivityFilter = 'all' | '30days' | '90days';
+type ActivityFilter = 'all' | '30days' | '90days' | 'custom';
 type LocationFilter = 'all' | 'exact';
 
 // --- Constants & Styles ---
@@ -451,6 +451,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   const [localData, setLocalData] = useState<BusinessEntity[]>(data);
   const [statusFilter, setStatusFilter] = useState<string>('Todos');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
+  const [customDateStart, setCustomDateStart] = useState<string>('');
+  const [customDateEnd, setCustomDateEnd] = useState<string>('');
   const [locationFilter, setLocationFilter] = useState<LocationFilter>('all');
   
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
@@ -473,12 +475,62 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   const filteredData = useMemo(() => {
     return localData.filter(d => {
       if (statusFilter !== 'Todos' && d.status !== statusFilter) return false;
-      if (activityFilter === '30days' && (d.daysSinceLastActivity === -1 || d.daysSinceLastActivity > 30)) return false;
-      if (activityFilter === '90days' && (d.daysSinceLastActivity === -1 || d.daysSinceLastActivity > 90)) return false;
       if (locationFilter === 'exact' && d.matchType === 'NEARBY') return false;
+
+      // Activity Filtering
+      if (d.daysSinceLastActivity === -1 && activityFilter !== 'all') return false;
+
+      const days = d.daysSinceLastActivity;
+      if (activityFilter === '30days' && days > 30) return false;
+      if (activityFilter === '90days' && days > 90) return false;
+
+      if (activityFilter === 'custom') {
+        if (!customDateStart && !customDateEnd) return true; // Se não escolheu nada ainda, mostra tudo
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        let maxDays = Infinity;
+        let minDays = 0;
+
+        if (customDateStart) {
+           const startDate = new Date(customDateStart);
+           // Data antiga = mais dias passados (ex: 1 jan 2024 = 300 dias atrás)
+           // Então Start Date define o LIMITE MÁXIMO de dias atrás
+           const diffTime = Math.abs(today.getTime() - startDate.getTime());
+           maxDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+        }
+
+        if (customDateEnd) {
+            const endDate = new Date(customDateEnd);
+            // Data recente = menos dias passados (ex: ontem = 1 dia atrás)
+            // Então End Date define o LIMITE MÍNIMO de dias atrás (geralmente próximo de 0)
+            const diffTime = Math.abs(today.getTime() - endDate.getTime());
+            minDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        }
+
+        // Correção de lógica: 
+        // Se usuário escolhe DE 01/01 (start) ATÉ 31/01 (end)
+        // Significa atividades que aconteceram ENTRE essas datas.
+        // Em "Dias Atrás": Start Date é o mais antigo (maior número), End Date é o mais recente (menor número).
+        
+        // Exemplo: Hoje = 01/02.
+        // Start: 01/01 => 31 dias atrás.
+        // End: 31/01 => 1 dia atrás.
+        // Lead deve ter days entre 1 e 31.
+        
+        // Se d.daysBetween(minDays, maxDays)
+        // OBS: Se o usuário inverter e colocar Start > End no input, a gente ajusta a lógica ou assume range.
+        
+        const actualMin = Math.min(minDays, maxDays);
+        const actualMax = Math.max(minDays, maxDays);
+
+        if (days < actualMin || days > actualMax) return false;
+      }
+
       return true;
     });
-  }, [localData, statusFilter, activityFilter, locationFilter]);
+  }, [localData, statusFilter, activityFilter, locationFilter, customDateStart, customDateEnd]);
 
   // Actions
   const toggleRow = useCallback((id: string) => {
@@ -610,18 +662,48 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
                <span>{locationFilter === 'exact' ? 'Local Exato' : 'Toda Região'}</span>
              </button>
 
-             <div className="flex items-center gap-2 text-sm text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800">
-               <Calendar size={16} />
+             <div className="flex items-center gap-2 text-sm text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800 transition-all hover:border-slate-600">
+               <Calendar size={16} className={activityFilter === 'custom' ? 'text-brand-400' : ''} />
                <select 
                   value={activityFilter}
                   onChange={(e) => setActivityFilter(e.target.value as ActivityFilter)}
-                  className="bg-slate-800 border-none text-slate-200 text-sm rounded focus:ring-0 py-0.5 px-2"
+                  className="bg-transparent border-none text-slate-200 text-sm rounded focus:ring-0 py-0.5 px-2 cursor-pointer"
                >
-                  <option value="all">Qualquer data</option>
-                  <option value="30days">Últimos 30 dias</option>
-                  <option value="90days">Últimos 90 dias</option>
+                  <option value="all" className="bg-slate-800">Qualquer data</option>
+                  <option value="30days" className="bg-slate-800">Últimos 30 dias</option>
+                  <option value="90days" className="bg-slate-800">Últimos 90 dias</option>
+                  <option value="custom" className="bg-slate-800">Personalizado...</option>
                </select>
+               
+               {/* Inputs de Data Personalizados (aparecem apenas se 'custom' for selecionado) */}
+               {activityFilter === 'custom' && (
+                 <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-700 animate-fadeIn">
+                   <input 
+                     type="date" 
+                     value={customDateStart}
+                     onChange={(e) => setCustomDateStart(e.target.value)}
+                     className="bg-slate-800 border border-slate-700 rounded text-xs text-white px-2 py-1 focus:ring-1 focus:ring-brand-500 outline-none"
+                     title="Data Inicial (Mais antiga)"
+                   />
+                   <span className="text-slate-500">-</span>
+                   <input 
+                     type="date" 
+                     value={customDateEnd}
+                     onChange={(e) => setCustomDateEnd(e.target.value)}
+                     className="bg-slate-800 border border-slate-700 rounded text-xs text-white px-2 py-1 focus:ring-1 focus:ring-brand-500 outline-none"
+                     title="Data Final (Mais recente)"
+                   />
+                 </div>
+               )}
              </div>
+
+             {/* Badge Visual de Intervalo Ativo */}
+             {activityFilter === 'custom' && customDateStart && customDateEnd && (
+                <div className="hidden xl:flex items-center gap-1 bg-brand-500/10 text-brand-400 border border-brand-500/20 px-2 py-1 rounded text-xs">
+                   <Filter size={10} />
+                   <span>{new Date(customDateStart).toLocaleDateString('pt-BR')} - {new Date(customDateEnd).toLocaleDateString('pt-BR')}</span>
+                </div>
+             )}
 
              <button
               onClick={handleExportCSV}
