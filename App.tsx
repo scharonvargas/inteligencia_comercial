@@ -223,7 +223,7 @@ const App: React.FC = () => {
                     disabled={isLoading}
                   />
                   {isSweepMode && (
-                    <span className="hidden lg:inline absolute right-2 top-1/2 -translate-y-1/2 text-[10px] uppercase font-bold text-emerald-500 border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded pointer-events-none">
+                    <span className="hidden lg:inline absolute right-0 -top-8 text-[10px] uppercase font-bold text-emerald-500 border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded pointer-events-none shadow-sm shadow-emerald-500/10">
                       Modo Varredura
                     </span>
                   )}

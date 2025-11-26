@@ -1,27 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MapPin, Loader2 } from 'lucide-react';
+import { MapPin, Loader2, Globe } from 'lucide-react';
 
 interface AddressAutocompleteProps {
   value: string;
   onChange: (val: string) => void;
-  onLocationSelect?: (lat: number, lng: number) => void; // Novo callback
+  onLocationSelect?: (lat: number, lng: number) => void;
   disabled?: boolean;
   placeholder?: string;
   className?: string;
 }
 
-interface NominatimResult {
-  place_id: number;
+interface SuggestionResult {
+  place_id: string | number;
   display_name: string;
+  main_text?: string; // Para exibir rua em destaque
+  secondary_text?: string; // Para exibir cidade/estado
   lat: string;
   lon: string;
-  address: {
-    road?: string;
-    suburb?: string;
-    city?: string;
-    state?: string;
-    postcode?: string;
-  };
+  source: 'google' | 'osm';
 }
 
 export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
@@ -32,7 +28,7 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
   placeholder,
   className
 }) => {
-  const [suggestions, setSuggestions] = useState<NominatimResult[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionResult[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -51,52 +47,79 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
   // Debounce logic para buscar na API
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
-      // Só busca se tiver mais de 3 caracteres e o menu estiver aberto (evita busca ao selecionar)
+      // Só busca se tiver mais de 3 caracteres e o menu estiver aberto
       if (value.length > 3 && isOpen) {
         setIsLoading(true);
-        try {
-          // Busca no Nominatim (Brasil focado, mas aceita outros)
-          const response = await fetch(
-            `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`
-          );
-          const data = await response.json();
-          setSuggestions(data);
-        } catch (error) {
-          console.error("Erro ao buscar endereço:", error);
-          setSuggestions([]);
-        } finally {
-          setIsLoading(false);
+        const apiKey = process.env.API_KEY;
+        let googleSuccess = false;
+
+        // 1. TENTATIVA GOOGLE GEOCODING (Prioridade)
+        if (apiKey) {
+            try {
+                const googleRes = await fetch(
+                    `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(value)}&region=br&language=pt-BR&key=${apiKey}`
+                );
+                const googleData = await googleRes.json();
+
+                if (googleData.status === 'OK' && googleData.results.length > 0) {
+                    const mappedResults: SuggestionResult[] = googleData.results.map((item: any) => ({
+                        place_id: item.place_id,
+                        display_name: item.formatted_address,
+                        main_text: item.address_components[0]?.long_name || item.formatted_address.split(',')[0],
+                        secondary_text: item.formatted_address,
+                        lat: item.geometry.location.lat.toString(),
+                        lon: item.geometry.location.lng.toString(),
+                        source: 'google'
+                    }));
+                    setSuggestions(mappedResults);
+                    googleSuccess = true;
+                }
+            } catch (e) {
+                // Silenciosamente falha para o fallback se a API Key não tiver permissão de Maps
+                // console.warn("Google Geocoding indisponível, usando fallback.", e);
+            }
         }
+
+        // 2. FALLBACK OPENSTREETMAP (Nominatim)
+        if (!googleSuccess) {
+            try {
+              const osmRes = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`
+              );
+              const osmData = await osmRes.json();
+              
+              const mappedResults: SuggestionResult[] = osmData.map((item: any) => ({
+                  place_id: item.place_id,
+                  display_name: item.display_name,
+                  main_text: item.address?.road || item.display_name.split(',')[0],
+                  secondary_text: item.display_name,
+                  lat: item.lat,
+                  lon: item.lon,
+                  source: 'osm'
+              }));
+              
+              setSuggestions(mappedResults);
+            } catch (error) {
+              console.error("Erro ao buscar endereço (OSM):", error);
+              setSuggestions([]);
+            }
+        }
+        
+        setIsLoading(false);
       } else if (value.length <= 3) {
         setSuggestions([]);
       }
-    }, 500); // 500ms delay
+    }, 300); // 300ms debounce (mais rápido)
 
     return () => clearTimeout(delayDebounceFn);
   }, [value, isOpen]);
 
-  const handleSelect = (item: NominatimResult) => {
-    // Formata o endereço de forma limpa para o input
-    // Tenta pegar Rua + Bairro + Cidade ou o display_name completo se falhar
-    let formatted = item.display_name;
-    
-    // Tentar criar um formato curto mais amigável: "Rua X, Bairro Y, Cidade - UF"
-    if (item.address) {
-        const parts = [];
-        if (item.address.road) parts.push(item.address.road);
-        if (item.address.suburb) parts.push(item.address.suburb);
-        if (item.address.city) parts.push(item.address.city);
-        else if (item.address.state) parts.push(item.address.state);
-        
-        if (parts.length >= 2) {
-            formatted = parts.join(", ");
-        }
-    }
-
-    onChange(formatted);
+  const handleSelect = (item: SuggestionResult) => {
+    // Usa o nome formatado completo para preencher o input
+    onChange(item.display_name);
     
     // Passa coordenadas para o pai se disponível
-    if (onLocationSelect && item.lat && item.lon) {
+    if (onLocationSelect) {
         onLocationSelect(parseFloat(item.lat), parseFloat(item.lon));
     }
 
@@ -138,19 +161,24 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
               onClick={() => handleSelect(item)}
               className="px-4 py-3 hover:bg-slate-700 cursor-pointer border-b border-slate-700/50 last:border-none flex items-start gap-3 transition-colors text-left"
             >
-              <MapPin size={16} className="mt-1 text-brand-500 shrink-0" />
-              <div>
-                <span className="text-slate-200 text-sm font-medium block">
-                   {item.address.road || item.display_name.split(',')[0]}
+              {item.source === 'google' ? (
+                 <MapPin size={16} className="mt-1 text-red-500 shrink-0" />
+              ) : (
+                 <Globe size={16} className="mt-1 text-emerald-500 shrink-0" />
+              )}
+              <div className="overflow-hidden">
+                <span className="text-slate-200 text-sm font-medium block truncate">
+                   {item.main_text}
                 </span>
-                <span className="text-slate-400 text-xs block truncate max-w-[250px] md:max-w-md">
-                  {item.display_name}
+                <span className="text-slate-400 text-xs block truncate">
+                  {item.secondary_text}
                 </span>
               </div>
             </li>
           ))}
-          <li className="px-2 py-1 text-[10px] text-right text-slate-600 bg-slate-900/50 rounded-b-lg">
-            Dados © OpenStreetMap contributors
+          <li className="px-2 py-1 text-[10px] text-right text-slate-600 bg-slate-900/50 rounded-b-lg flex justify-between">
+            <span>{suggestions[0]?.source === 'google' ? 'Google Maps' : 'OpenStreetMap'}</span>
+            <span>VeriCorp Geo</span>
           </li>
         </ul>
       )}
