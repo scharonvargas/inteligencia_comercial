@@ -269,18 +269,22 @@ export const fetchAndAnalyzeBusinesses = async (
     if (isBroadSearch) {
       promptTask = `
         1. VARREDURA GEOGRÁFICA EM: ${region}.
-        2. ANÁLISE DE PROXIMIDADE (IMPORTANTE):
-           - Prioridade A: Empresas exatamente no endereço/bairro solicitado. (matchType="EXACT")
-           - Prioridade B: Se houver poucas opções no local exato, expanda para num raio de 5km, MAS VOCÊ DEVE EXPLICITAR QUE É VIZINHO. (matchType="NEARBY")
-        3. HIERARQUIA DE RELEVÂNCIA (MODO VARREDURA GERAL):
-           - CONTEXTO: Mapeamento de comércio para prospecção B2B.
-           - CENÁRIO 1 (REGIÃO AMPLA - Cidade/Bairro):
-             > PRIORIDADE ABSOLUTA: Comece extraindo empresas de ALTA RELEVÂNCIA para o público geral (Serviços Essenciais e de Alto Tráfego).
-             > LISTAR PRIMEIRO: Supermercados, Farmácias, Padarias, Postos de Gasolina, Bancos, Oficinas Mecânicas e Restaurantes movimentados.
-             > MOTIVO: Estas são as "âncoras" do comércio local que validam a região.
-             > SÓ DEPOIS: Busque segmentos nichados ou escritórios fechados.
-           - CENÁRIO 2 (REGIÃO ESPECÍFICA - Rua/Avenida):
-             > Liste QUALQUER negócio de porta aberta nessa via exata, independente do segmento.
+        ${coordinates ? `USAR COORDENADAS GPS: Lat ${coordinates.lat}, Lng ${coordinates.lng} como CENTRO.` : ''}
+
+        2. LÓGICA DE PRIORIZAÇÃO GEOGRÁFICA (CRÍTICO):
+           - O usuário quer empresas EXATAMENTE nesta localização: "${region}".
+           - TENTATIVA #1 (Obrigatória): Busque exaustivamente por empresas cujo endereço contenha "${region}" (se for rua) ou esteja dentro do limite oficial (se for bairro).
+           - CLASSIFICAÇÃO 'matchType':
+             > "EXACT": Endereço contém a rua/bairro pesquisado.
+             > "NEARBY": Apenas se não houver mais opções no local exato, busque num raio expandido (ruas transversais ou vizinhas).
+
+        3. HIERARQUIA DE TIPO DE NEGÓCIO:
+           - CENÁRIO A (Se a busca for por RUA/AVENIDA):
+             > Liste QUALQUER negócio ativo nessa via (Lojas, Serviços, Escritórios). A fidelidade ao endereço é mais importante que o tipo.
+           - CENÁRIO B (Se a busca for por BAIRRO/CIDADE):
+             > Priorize "Âncoras Comerciais" de alto fluxo: Supermercados, Farmácias, Postos, Bancos, Padarias.
+             > Objetivo: Mapear os pontos principais do bairro antes de listar negócios obscuros.
+
         4. Encontre EXATAMENTE ${currentBatchSize} empresas variadas seguindo essa hierarquia.
       `;
     } else {
