@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { VariableSizeList as List } from 'react-window';
+import * as ReactWindow from 'react-window';
 import { BusinessEntity, BusinessStatus } from '../types';
 import { generateOutreachEmail } from '../services/geminiService';
 import { dbService } from '../services/dbService';
@@ -10,6 +10,9 @@ import {
   Activity, ChevronDown, ChevronUp, Calendar, Instagram, Facebook, Linkedin,
   Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X
 } from 'lucide-react';
+
+// Workaround for react-window import in ESM/CDN environments
+const List = (ReactWindow as any).default?.VariableSizeList || ReactWindow.VariableSizeList;
 
 // --- Leaflet Icon Fix ---
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -44,10 +47,12 @@ const getStatusColor = (status: BusinessStatus) => {
 };
 
 const getSocialIcon = (url: string) => {
-  if (url.includes('instagram')) return <Instagram size={16} />;
-  if (url.includes('facebook')) return <Facebook size={16} />;
-  if (url.includes('linkedin')) return <Linkedin size={16} />;
-  if (url.includes('wa.me') || url.includes('whatsapp')) return <MessageCircle size={16} />;
+  if (!url) return <ExternalLink size={16} />;
+  const lowerUrl = url.toLowerCase();
+  if (lowerUrl.includes('instagram')) return <Instagram size={16} />;
+  if (lowerUrl.includes('facebook')) return <Facebook size={16} />;
+  if (lowerUrl.includes('linkedin')) return <Linkedin size={16} />;
+  if (lowerUrl.includes('wa.me') || lowerUrl.includes('whatsapp')) return <MessageCircle size={16} />;
   return <ExternalLink size={16} />;
 };
 
@@ -453,7 +458,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   const [copiedEmailId, setCopiedEmailId] = useState<string | null>(null);
 
   // Virtualization Refs
-  const listRef = useRef<List>(null);
+  const listRef = useRef<ReactWindow.VariableSizeList>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const containerSize = useContainerSize(containerRef);
 
