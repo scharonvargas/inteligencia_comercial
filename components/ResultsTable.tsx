@@ -67,7 +67,11 @@ const getHostname = (url: string) => {
 
 const createWhatsAppUrl = (phone: string | null, name: string) => {
   if (!phone) return '#';
+  // Remove non-digits
   let clean = phone.replace(/\D/g, '');
+  // Remove leading zeros
+  clean = clean.replace(/^0+/, '');
+  
   if (clean.length === 0) return '#';
   
   // Heurística simples para Brasil: se tiver 10 ou 11 dígitos, assume que falta o 55
