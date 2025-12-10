@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { BusinessEntity } from '../types';
 import { GripVertical, Phone, ExternalLink, MapPin, Calendar, AlertCircle, ArrowRight } from 'lucide-react';
 
@@ -15,12 +15,29 @@ const COLUMNS = [
   { id: 'discarded', title: 'Descartados', color: 'border-red-500/50 bg-red-500/5', iconColor: 'text-red-400' },
 ];
 
+const STORAGE_KEY = 'vericorp_kanban_stages';
+
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange }) => {
   const [activeCol, setActiveCol] = useState<string | null>(null);
   const [sourceCol, setSourceCol] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   
-  // Organiza os dados em colunas
+  // Cache local para persistência de estágios
+  const [localStages, setLocalStages] = useState<Record<string, string>>({});
+
+  // Carregar estágios salvos ao montar
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        setLocalStages(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.warn('Falha ao carregar estado do Kanban:', e);
+    }
+  }, []);
+
+  // Organiza os dados em colunas, mesclando dados da API com cache local
   const columnsData = useMemo(() => {
     const cols: Record<string, BusinessEntity[]> = {
       new: [],
@@ -30,16 +47,23 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
     };
 
     data.forEach(biz => {
-      const stage = biz.pipelineStage || 'new';
+      // Prioridade: Cache Local > Propriedade vinda da API/DB > Padrão 'new'
+      // Usamos uma chave composta (Name + Address) ou ID para recuperar o estágio, 
+      // pois o ID gerado na busca pode mudar a cada 'scan', mas nome+endereço é constante.
+      // Aqui tentaremos pelo ID primeiro (para sessão atual) e fallback para consistência futura.
+      
+      const savedStage = localStages[biz.id];
+      const stage = savedStage || biz.pipelineStage || 'new';
+      
       if (cols[stage]) {
-        cols[stage].push(biz);
+        cols[stage].push({ ...biz, pipelineStage: stage });
       } else {
-        cols['new'].push(biz);
+        cols['new'].push({ ...biz, pipelineStage: 'new' });
       }
     });
 
     return cols;
-  }, [data]);
+  }, [data, localStages]);
 
   // Handlers de Drag and Drop
   const handleDragStart = (e: React.DragEvent, id: string, colId: string) => {
@@ -70,9 +94,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
   const handleDrop = (e: React.DragEvent, targetStage: string) => {
     e.preventDefault();
     const businessId = e.dataTransfer.getData('text/plain');
+    
     if (businessId) {
+      // 1. Atualizar persistência local
+      const newLocalStages = { ...localStages, [businessId]: targetStage };
+      setLocalStages(newLocalStages);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newLocalStages));
+
+      // 2. Notificar pai (App/DB)
       onStageChange(businessId, targetStage);
     }
+    
     setActiveCol(null);
     setDraggedId(null);
     setSourceCol(null);
@@ -82,7 +114,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
     <div className="flex flex-col md:flex-row gap-4 h-[calc(100vh-250px)] overflow-x-auto pb-4 custom-scrollbar">
       {COLUMNS.map(col => {
         const isActive = activeCol === col.id;
-        const isEmpty = columnsData[col.id]?.length === 0;
+        const items = columnsData[col.id] || [];
+        const isEmpty = items.length === 0;
 
         return (
           <div 
@@ -104,7 +137,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
               <span className={`text-xs px-2 py-1 rounded-full font-mono font-bold ${
                 isActive ? 'bg-brand-600 text-white' : 'bg-slate-700 text-slate-300'
               }`}>
-                {columnsData[col.id]?.length || 0}
+                {items.length}
               </span>
             </div>
 
@@ -112,7 +145,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ data, onStageChange })
             <div className={`flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar transition-all duration-300 ${
               isActive ? 'bg-brand-500/5' : ''
             }`}>
-              {columnsData[col.id]?.map(biz => {
+              {items.map(biz => {
                 const isDragging = draggedId === biz.id;
                 // Blur siblings: Se algo está sendo arrastado, esta é a coluna de origem, e este não é o card arrastado
                 const isSiblingInSource = draggedId !== null && sourceCol === col.id && !isDragging;

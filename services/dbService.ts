@@ -49,11 +49,15 @@ export const dbService = {
   testConnection: async (): Promise<boolean> => {
     if (!supabase) return false;
     try {
+      // Usar count: exact para verificar acesso à tabela
       const { count, error } = await supabase.from('prospects').select('*', { count: 'exact', head: true });
-      if (error) return false;
+      if (error) {
+        console.warn("Falha no teste de conexão (Tabela ou Permissão):", error.message || error);
+        return false;
+      }
       return true;
-    } catch (e) {
-      console.warn("Falha no teste de conexão Supabase:", e);
+    } catch (e: any) {
+      console.warn("Erro de rede ou cliente Supabase:", e.message || e);
       return false;
     }
   },
@@ -78,7 +82,7 @@ export const dbService = {
         .maybeSingle();
 
       if (searchError) {
-        console.warn("Erro ao buscar no Supabase, usando local:", searchError);
+        console.warn("Erro ao buscar no Supabase (searchError):", searchError.message || searchError);
         return toggleLocal(business);
       }
 
@@ -117,8 +121,8 @@ export const dbService = {
         if (insertError) throw insertError;
         return true; // É prospect
       }
-    } catch (error) {
-      console.error("Erro ao alternar prospect no Supabase:", error);
+    } catch (error: any) {
+      console.error("Erro ao alternar prospect no Supabase:", error.message || error);
       return toggleLocal(business); // Fallback silencioso em caso de erro de rede
     }
   },
@@ -139,8 +143,8 @@ export const dbService = {
         .eq('business_id', businessId);
 
       if (error) throw error;
-    } catch (error) {
-      console.error("Erro ao atualizar estágio no Supabase:", error);
+    } catch (error: any) {
+      console.error("Erro ao atualizar estágio no Supabase:", error.message || error);
       updateLocalStage(businessId, newStage);
     }
   },
@@ -178,8 +182,16 @@ export const dbService = {
         isProspect: true,
         pipelineStage: row.pipeline_stage || 'new'
       }));
-    } catch (error) {
-      console.error("Erro ao buscar prospects do Supabase, tentando local:", error);
+    } catch (error: any) {
+      // Improved error logging
+      const errMsg = error.message || JSON.stringify(error, null, 2);
+      console.error("Erro ao buscar prospects do Supabase, tentando local:", errMsg);
+      
+      // Hint for missing table
+      if (errMsg.includes("relation") && errMsg.includes("does not exist")) {
+        console.info("%c⚠️ A tabela 'prospects' não existe no Supabase. Crie-a usando o SQL fornecido.", "color: orange; font-weight: bold;");
+      }
+      
       return getLocalProspects();
     }
   }

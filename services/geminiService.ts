@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { BusinessEntity, BusinessStatus } from "../types";
 import { dbService } from "./dbService";
 
@@ -16,9 +16,6 @@ interface CacheEntry {
 // Cache em memória para evitar chamadas repetidas na mesma sessão
 const searchCache = new Map<string, CacheEntry>();
 
-/**
- * Remove entradas expiradas do cache para liberar memória (Garbage Collection)
- */
 const pruneCache = () => {
   const now = Date.now();
   let deletedCount = 0;
@@ -33,155 +30,171 @@ const pruneCache = () => {
   }
 };
 
-/**
- * Limpa todo o cache manualmente
- */
 export const clearMemoryCache = () => {
   searchCache.clear();
   console.log("🧹 Cache em memória limpo manualmente.");
 };
 
-/**
- * Utilitário de espera (sleep)
- */
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Utilitário para formatar link de WhatsApp
- */
 function getWhatsAppUrl(phone: string | null, companyName: string): string | null {
   if (!phone) return null;
-  
-  // Limpa caracteres não numéricos
   const cleanPhone = phone.replace(/\D/g, '');
-  
-  // Verifica se tem formato mínimo para ser celular BR (DDD + 9 dígitos) = 11 dígitos
-  // Ou formato internacional
   if (cleanPhone.length < 10) return null;
-
   let finalNumber = cleanPhone;
-  
-  // Se for numero BR sem codigo de pais, adiciona 55
   if (cleanPhone.length >= 10 && cleanPhone.length <= 11) {
     finalNumber = `55${cleanPhone}`;
   }
-
   const message = `Olá, encontrei a ${companyName} e gostaria de saber mais sobre seus serviços.`;
   return `https://wa.me/${finalNumber}?text=${encodeURIComponent(message)}`;
 }
 
 /**
- * Parser JSON Robusto v12 (Tokenização de URLs + Stream Support)
+ * Função auxiliar para refinar métricas de atividade baseadas em texto vago.
+ * Tenta extrair dias numéricos de evidências textuais se o número explícito falhar.
  */
-function cleanAndParseJSON(text: string): any[] {
-  if (!text || typeof text !== 'string') return [];
-  if (text.trim().length === 0) return [];
+function refineActivityMetrics(evidence: string | null, explicitDays: number | any): { text: string, days: number } {
+  let text = evidence?.trim() || "Sem dados recentes";
+  let days = typeof explicitDays === 'number' ? explicitDays : -1;
 
-  // 1. Limpeza básica de Markdown
-  let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  // Se já temos um número válido (incluindo 0 para hoje), confiamos nele
+  if (days >= 0) return { text, days };
 
-  // 2. TOKENIZAÇÃO DE URLS
-  // Extrai URLs antes de qualquer manipulação para evitar quebras por // (comentários) ou falta de aspas.
-  const urlMap = new Map<string, string>();
-  let urlCounter = 0;
-  
-  // Regex para capturar URLs (http/https) até encontrar um delimitador JSON comum ou espaço
-  cleanText = cleanText.replace(/(https?:\/\/[^\s",}\]]+)/g, (match) => {
-    const token = `__URL_TOKEN_${urlCounter++}__`;
-    urlMap.set(token, match);
-    return token;
-  });
+  const lowerText = text.toLowerCase();
 
-  // 3. Remover comentários de linha (// ...)
-  cleanText = cleanText.replace(/\/\/.*$/gm, '');
-
-  // 4. Corrigir tokens sem aspas
-  // Caso: "key": __URL_TOKEN__ -> "key": "__URL_TOKEN__"
-  cleanText = cleanText.replace(/:\s*(__URL_TOKEN_\d+__)/g, ': "$1"');
-  // Caso: [ __URL_TOKEN__ ] -> [ "__URL_TOKEN__" ] (Arrays de links)
-  cleanText = cleanText.replace(/([\[,]\s*)(__URL_TOKEN_\d+__)/g, '$1"$2"');
-
-  // 5. Normalização de Streams de Objetos (} { -> } , {)
-  cleanText = cleanText.replace(/}\s*[\r\n]*\s*{/g, '},{');
-
-  // 6. Remover Trailing Commas
-  cleanText = cleanText.replace(/,(\s*[}\]])/g, '$1');
-
-  // 7. Restaurar URLs
-  // Recoloca as URLs originais nos lugares dos tokens.
-  urlMap.forEach((url, token) => {
-    // Usa regex global para garantir que todas as ocorrências sejam substituídas
-    cleanText = cleanText.replace(new RegExp(token, 'g'), url);
-  });
-
-  // 8. Tentar Parse Direto (Caminho Feliz)
-  try {
-    const textToParse = cleanText.trim().startsWith('[') ? cleanText : `[${cleanText}]`;
-    const result = JSON.parse(textToParse);
-    return Array.isArray(result) ? result : [result];
-  } catch (e) {
-    // Falha silenciosa, tenta o fallback
+  // Tentativa de inferência via Regex no texto da evidência
+  const daysMatch = lowerText.match(/(\d+)\s*(?:dias?|days?)/);
+  if (daysMatch) {
+    days = parseInt(daysMatch[1], 10);
+  } else if (lowerText.includes("hoje") || lowerText.includes("today") || lowerText.includes("agora") || lowerText.includes("minutos")) {
+    days = 0;
+  } else if (lowerText.includes("ontem") || lowerText.includes("yesterday")) {
+    days = 1;
+  } else if (lowerText.includes("semana passada") || lowerText.includes("last week")) {
+    days = 7;
+  } else if (lowerText.includes("mês passado") || lowerText.includes("last month")) {
+    days = 30;
   }
 
-  // 9. EXTRAÇÃO CIRÚRGICA DE BLOCOS (Fallback Robusto)
-  // Analisa a string caractere por caractere para extrair objetos JSON válidos
-  const objects: any[] = [];
-  let braceDepth = 0;
-  let currentObjStr = '';
-  let inString = false;
-  let isEscaped = false;
+  return { text, days };
+}
 
-  for (let i = 0; i < cleanText.length; i++) {
-    const char = cleanText[i];
+/**
+ * Restaura URLs que foram substituídas por tokens antes do parse.
+ * Percorre recursivamente objetos e arrays.
+ */
+function restoreUrls(data: any, map: Map<string, string>): any {
+  if (typeof data === 'string') {
+    // Substitui todas as ocorrências de placeholders
+    if (data.includes('__URL_PLACEHOLDER_')) {
+        return data.replace(/__URL_PLACEHOLDER_(\d+)__/g, (match) => {
+            return map.get(match) || match;
+        });
+    }
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data.map(item => restoreUrls(item, map));
+  }
+  if (typeof data === 'object' && data !== null) {
+    const newObj: any = {};
+    for (const key in data) {
+      newObj[key] = restoreUrls(data[key], map);
+    }
+    return newObj;
+  }
+  return data;
+}
+
+/**
+ * Analisa e limpa JSON proveniente da IA.
+ * Implementa estratégia de proteção de URLs (Tokenização) antes de tentar corrigir o JSON.
+ */
+function cleanAndParseJSON(text: string): any[] {
+  if (!text || text.trim().length === 0) return [];
+
+  let cleaned = text;
+
+  // 1. Remover Markdown (```json ... ```) e Comentários
+  cleaned = cleaned.replace(/```json/gi, "").replace(/```/g, "").replace(/\/\/.*$/gm, "");
+
+  // 2. Proteção de URLs (Extração e Tokenização)
+  // Isso evita que caracteres em URLs (:, /, ?) quebrem a lógica de correção de chaves JSON
+  const urlMap = new Map<string, string>();
+  let urlCounter = 0;
+
+  // Regex para capturar URLs http/https/www. 
+  // Evita capturar aspas ou chaves de fechamento no final.
+  const urlRegex = /(?:https?:\/\/[^\s"'}]+)|(?:www\.[^\s"'}]+)/g;
+
+  cleaned = cleaned.replace(urlRegex, (match) => {
+    // Remove pontuação final indesejada (ex: vírgula ou chave se a IA colou o texto)
+    let url = match;
+    const trailing = url.match(/[),;\]}]+$/);
+    let suffix = "";
+    if (trailing) {
+        suffix = trailing[0];
+        url = url.slice(0, -trailing[0].length);
+    }
     
-    if (inString) {
-      if (char === '\\' && !isEscaped) isEscaped = true;
-      else if (char === '"' && !isEscaped) inString = false;
-      else isEscaped = false;
-      currentObjStr += char;
-      continue;
-    }
+    const token = `__URL_PLACEHOLDER_${urlCounter++}__`;
+    urlMap.set(token, url);
+    return token + suffix;
+  });
 
-    if (char === '"') {
-      inString = true;
-      currentObjStr += char;
-      continue;
-    }
+  // 3. Tentativa Direta (Melhor Cenário)
+  try {
+    const parsed = JSON.parse(cleaned);
+    const restored = restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
+    return restored;
+  } catch (e) {
+    // Falhou, continuar processamento por blocos
+  }
 
-    if (char === '{') {
-      if (braceDepth === 0) currentObjStr = ''; 
-      braceDepth++;
-    }
+  // 4. Estratégia de Extração de Múltiplos Objetos/Arrays
+  const results: any[] = [];
+  
+  // Regex para capturar objetos JSON {...} ou Arrays [...]
+  const objectOrArrayRegex = /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})|(\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\])/g;
 
-    if (braceDepth > 0) {
-      currentObjStr += char;
-    }
-
-    if (char === '}') {
-      braceDepth--;
-      if (braceDepth === 0) {
-        try {
-          let safeObjStr = currentObjStr;
-          // Correção de chaves sem aspas dentro do bloco extraído
-          safeObjStr = safeObjStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)(\s*:)/g, '$1"$2"$3');
-          // Remover vírgulas finais dentro do bloco
-          safeObjStr = safeObjStr.replace(/,(\s*})/g, '$1');
-          
-          const obj = JSON.parse(safeObjStr);
-          objects.push(obj);
-        } catch (err) {
-          // Bloco ignorado se for inválido
-        }
-        currentObjStr = '';
+  let match;
+  while ((match = objectOrArrayRegex.exec(cleaned)) !== null) {
+    const jsonStr = match[0];
+    try {
+      // Tenta corrigir aspas em chaves não cotadas (ex: { name: "X" } -> { "name": "X" })
+      // Como as URLs estão protegidas como tokens simples, essa regex é segura.
+      let fixedJsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+      
+      // Correção opcional: trocar aspas simples por duplas (comum em output de IA agindo como JS)
+      // Seguro fazer aqui pois strings de URL já estão fora.
+      fixedJsonStr = fixedJsonStr.replace(/'/g, '"');
+      
+      const parsed = JSON.parse(fixedJsonStr);
+      const restored = restoreUrls(parsed, urlMap);
+      
+      if (Array.isArray(restored)) {
+        results.push(...restored);
+      } else if (typeof restored === 'object' && restored !== null) {
+        results.push(restored);
+      }
+    } catch (err) {
+      // Se a correção falhar, tenta o JSON original do bloco
+      try {
+        const parsedOriginal = JSON.parse(jsonStr);
+        const restored = restoreUrls(parsedOriginal, urlMap);
+        if (Array.isArray(restored)) results.push(...restored);
+        else if (typeof restored === 'object') results.push(restored);
+      } catch (finalErr) {
+        // Ignora bloco inválido
       }
     }
   }
 
-  return objects;
+  return results;
 }
 
 /**
- * Função Wrapper com Retry Logic
+ * Função Wrapper com Retry e Structured Output (JSON Schema)
  */
 async function generateContentWithRetry(
   modelId: string, 
@@ -191,6 +204,30 @@ async function generateContentWithRetry(
 ): Promise<any> {
   let attempt = 0;
   
+  // Definição do Schema para Output Estruturado (JSON garantido)
+  const businessSchema = {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        address: { type: Type.STRING },
+        phone: { type: Type.STRING, nullable: true },
+        website: { type: Type.STRING, nullable: true },
+        socialLinks: { type: Type.ARRAY, items: { type: Type.STRING } },
+        lastActivityEvidence: { type: Type.STRING },
+        daysSinceLastActivity: { type: Type.INTEGER },
+        trustScore: { type: Type.INTEGER },
+        status: { type: Type.STRING },
+        category: { type: Type.STRING },
+        lat: { type: Type.NUMBER, nullable: true },
+        lng: { type: Type.NUMBER, nullable: true },
+        matchType: { type: Type.STRING }
+      },
+      required: ["name", "address", "trustScore", "matchType", "socialLinks"]
+    }
+  };
+
   while (attempt < maxRetries) {
     try {
       const response = await ai.models.generateContent({
@@ -198,20 +235,31 @@ async function generateContentWithRetry(
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
-          temperature: isBroadSearch ? 0.6 : 0.4, 
+          temperature: isBroadSearch ? 0.6 : 0.4,
+          responseMimeType: "application/json", // Força JSON
+          responseSchema: businessSchema, // Força estrutura
         },
       });
       return response;
     } catch (error: any) {
       attempt++;
-      console.warn(`Tentativa ${attempt} falhou:`, error.message);
+      
+      console.warn(`[Gemini API] Falha na tentativa ${attempt}/${maxRetries}.`);
+      console.warn(`[Gemini API] Status: ${error.status || 'N/A'}`);
+      console.warn(`[Gemini API] Message: ${error.message}`);
       
       if (error.message?.includes('API_KEY') || error.status === 400 || error.status === 403) {
         throw error;
       }
 
       if (attempt >= maxRetries) throw error;
-      const delay = 1000 * Math.pow(2, attempt - 1);
+
+      // Exponential Backoff with Jitter
+      const baseDelay = 1000 * Math.pow(2, attempt - 1);
+      const jitter = Math.random() * 500;
+      const delay = Math.min(baseDelay + jitter, 10000);
+      
+      console.log(`[Gemini API] Aguardando ${Math.round(delay)}ms antes de tentar novamente...`);
       await wait(delay);
     }
   }
@@ -226,20 +274,16 @@ export const fetchAndAnalyzeBusinesses = async (
   coordinates?: { lat: number, lng: number } | null
 ): Promise<BusinessEntity[]> => {
   if (!apiKey) {
-    throw new Error("A chave da API está ausente. Selecione um projeto Google Cloud válido com faturamento ativado.");
+    throw new Error("A chave da API está ausente.");
   }
 
-  // 1. Limpeza Proativa do Cache
   pruneCache();
 
   const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
   
-  // 2. Verificação de Cache
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
-    const now = Date.now();
-    
-    if (now - entry.timestamp < CACHE_TTL_MS) {
+    if (Date.now() - entry.timestamp < CACHE_TTL_MS) {
       onProgress("⚡ Recuperando resultados do cache instantâneo...");
       const cachedData = entry.data;
       await wait(300); 
@@ -278,7 +322,6 @@ export const fetchAndAnalyzeBusinesses = async (
     
     const isFirstBatch = allEntities.length === 0;
     const targetBatchSize = isFirstBatch ? INITIAL_BATCH_SIZE : SUBSEQUENT_BATCH_SIZE;
-    
     const remaining = maxResults - allEntities.length;
     const currentBatchSize = Math.min(targetBatchSize, remaining);
     
@@ -290,87 +333,79 @@ export const fetchAndAnalyzeBusinesses = async (
        onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`);
     }
 
-    // PROMPT REFINADO
     let promptTask = "";
     if (isBroadSearch) {
       promptTask = `
-        1. VARREDURA GEOGRÁFICA EM: ${region}.
-        ${coordinates ? `CENTRO EXATO: Lat ${coordinates.lat}, Lng ${coordinates.lng}.` : ''}
+        1. CONTEXTO: VARREDURA GERAL DE INFRAESTRUTURA (Multisetorial).
+        LOCALIZAÇÃO ALVO: "${region}".
+        ${coordinates ? `📍 PONTO DE ANCORAGEM (GPS PRECISO): Lat ${coordinates.lat}, Lng ${coordinates.lng}.` : ''}
 
-        2. LÓGICA DE PRIORIZAÇÃO GEOGRÁFICA (STRICT):
-           - Se for nome de RUA/AVENIDA: Liste QUALQUER negócio com frente para esta via (matchType="EXACT").
-           - Se for BAIRRO/CIDADE: Priorize empresas de INFRAESTRUTURA VITAL.
+        2. ANÁLISE DE ESCOPO E PRIORIDADE (CRÍTICO):
+           - Se a região for ESPECÍFICA (Rua, Avenida): Liste estabelecimentos com fachada ativa na via.
+           - Se a região for AMPLA (Bairro, Cidade, Região): A prioridade é ABSOLUTA para serviços de "Alta Relevância Pública".
 
-        3. HIERARQUIA DE RELEVÂNCIA PÚBLICA (CRÍTICO - SEGUIR RIGOROSAMENTE):
-           A lista de resultados deve ser composta OBRIGATORIAMENTE por:
-           > 80% (PRIORIDADE TOTAL) - INFRAESTRUTURA VITAL E ALTO FLUXO:
-             1. ALIMENTAÇÃO ESSENCIAL: Supermercados, Mercadinhos, Atacadistas, Padarias, Açougues.
-             2. SAÚDE & EMERGÊNCIA: Farmácias, Drogarias 24h, Clínicas Médicas Populares, Hospitais.
-             3. SERVIÇOS PÚBLICOS & UTILIDADES: Postos de Gasolina, Agências Bancárias, Lotéricas, Correios, Cartórios.
-             4. COMÉRCIO DE NECESSIDADE: Oficinas Mecânicas, Borracharias, Lojas de Material de Construção.
+        3. HIERARQUIA DE RELEVÂNCIA (MODO VARREDURA GERAL):
+           A IA deve priorizar a extração de empresas essenciais e de grande circulação antes de buscar nichos específicos.
+
+           ORDEM OBRIGATÓRIA DE EXTRAÇÃO (Priority Queue):
            
-           > 20% (COMPLEMENTAR) - OUTROS:
-             - Restaurantes populares, Lojas de Roupas, Barbearias, Salões de Beleza.
+           [NÍVEL 1 - ESSENCIAIS E ALTA CIRCULAÇÃO] (Prioridade Máxima):
+           - Mercados, Supermercados, Atacadistas, Hortifrutis.
+           - Farmácias, Drogarias.
+           - Postos de Combustível.
+           - Padarias e Panificadoras (de grande fluxo).
            
-           OBJETIVO: Criar um "Guia de Sobrevivência e Utilidade Pública" da região de "${region}". O usuário quer saber onde comprar comida, remédio e abastecer.
+           [NÍVEL 2 - SERVIÇOS E COMÉRCIO POPULAR] (Preencher após Nível 1):
+           - Oficinas Mecânicas, Auto Peças.
+           - Lojas de Materiais de Construção.
+           - Restaurantes de fluxo diário.
+           - Bancos e Lotéricas.
 
-        4. Encontre EXATAMENTE ${currentBatchSize} empresas variadas seguindo essa hierarquia.
+           [NÍVEL 3 - NICHOS] (Apenas se não houver dados suficientes nos níveis acima):
+           - Lojas especializadas, Consultórios, Escritórios, Academias, Salões de Beleza pequenos.
+
+           *REGRA DE OURO:* Em varreduras gerais, ignore "lojas de nicho" (ex: loja de botão, consultório de psicologia) até que os estabelecimentos essenciais (Nível 1) tenham sido listados. O foco é INFRAESTRUTURA COMERCIAL.
+
+        4. INSTRUÇÃO GEOGRÁFICA:
+           - Utilize as coordenadas como centro.
+           - Varra do centro para a periferia buscando essas categorias prioritárias.
       `;
     } else {
       promptTask = `
         1. BUSCA FOCADA: Empresas de "${segment}" em "${region}".
         2. HIERARQUIA DE LOCALIZAÇÃO (STRICT):
            - Tente encontrar empresas NO BAIRRO/RUA ESPECIFICADO. (matchType="EXACT")
-           - SE (e somente se) houver escassez no local exato, busque na cidade vizinha ou bairros próximos. (matchType="NEARBY" se necessário)
-           - DEIXE CLARO no endereço se for outra cidade.
-        3. Encontre EXATAMENTE ${currentBatchSize} resultados.
+           - SE houver escassez, busque próximo.
       `;
     }
 
     const prompt = `
-      Atue como um Especialista em Geomarketing e Verificação de Dados.
+      Atue como um Especialista em Geomarketing.
       
       OBJETIVO:
       ${promptTask}
+      Encontre ${currentBatchSize} empresas.
       
-      5. EXCLUSÃO: Não repita estas empresas: [${exclusionList}].
+      5. EXCLUSÃO: Não repita: [${exclusionList}].
       
-      6. VERIFICAÇÃO DE ATIVIDADE E INFERÊNCIA INTELIGENTE:
-         - Busque datas recentes de posts/reviews.
-         - Se a informação exata não estiver disponível, TENTE INFERIR a atividade com base no contexto (ex: "Post sobre Volta às Aulas" = Jan/Fev 2024; "Promoção de Natal" = Dezembro).
-         - Em 'lastActivityEvidence', seja específico: "Post no Instagram sobre [Assunto] em [Mês/Ano]" ou "Review no Google Maps há 2 dias".
-         - Se 'daysSinceLastActivity' for < 30, considere 'ACTIVE'.
-         - Priorize encontrar o telefone celular (WhatsApp) se disponível.
+      6. DADOS OBRIGATÓRIOS (Schema Enforcement):
+         - matchType: "EXACT" ou "NEARBY".
+         - trustScore: 0-100.
+         - lastActivityEvidence: SEJA ESPECÍFICO. Se a evidência for vaga (ex: "Post recente"), INFIRA a data ou período pelo contexto sazonal (ex: "Post de Natal" -> "Dezembro 2024").
+         - daysSinceLastActivity: Número inteiro.
+         - socialLinks: Array de strings (URLs).
       
-      7. FORMATO DE SAÍDA JSON OBRIGATÓRIO:
-      Retorne um Array JSON com ${currentBatchSize} objetos.
-      
-      Campos obrigatórios:
-      - matchType: "EXACT" (se for no local pedido) ou "NEARBY" (se for expansão de raio).
-      - address: Endereço completo.
-      - trustScore: 0 a 100 baseado na quantidade de evidências encontradas.
-      
-      Exemplo:
-      {
-        "name": "Supermercado Exemplo",
-        "address": "Av. Principal, 100, Bairro Tal, Cidade - UF",
-        "phone": "(11) 99999-9999",
-        "matchType": "EXACT", 
-        "category": "Supermercado",
-        "status": "Verificado",
-        "lat": -23.5, "lng": -46.6,
-        "daysSinceLastActivity": 2,
-        "socialLinks": ["https://instagram.com/mercado"],
-        "website": "https://www.mercado.com",
-        "lastActivityEvidence": "Post de ofertas de fim de semana publicado ontem no Instagram."
-      }
+      O output DEVE obedecer estritamente ao Schema JSON fornecido.
     `;
 
     try {
       const response = await generateContentWithRetry(modelId, prompt, isBroadSearch);
 
-      const rawText = response.text || "";
-      const batchData = cleanAndParseJSON(rawText);
+      const rawText = response.text || "[]";
+      let batchData: any[] = [];
+      
+      // Usa a função de parse aprimorada para lidar com múltiplos objetos/formatos e URLs quebradas
+      batchData = cleanAndParseJSON(rawText);
 
       if (!batchData || batchData.length === 0) {
         onProgress("Expandindo raio de busca...");
@@ -403,15 +438,18 @@ export const fetchAndAnalyzeBusinesses = async (
              finalMatchType = 'NEARBY';
            }
 
+           // Refinamento de métricas de atividade (Inferência)
+           const { text: evidenceText, days: evidenceDays } = refineActivityMetrics(item.lastActivityEvidence, item.daysSinceLastActivity);
+
            const entity: BusinessEntity = {
             id: `biz-${Date.now()}-${allEntities.length + newCount}`,
             name: name,
             address: address,
             phone: item.phone || null,
-            website: (item.website && typeof item.website === 'string' && item.website.startsWith('http')) ? item.website : null,
+            website: item.website || null,
             socialLinks: validSocialLinks,
-            lastActivityEvidence: item.lastActivityEvidence || "Sem dados recentes",
-            daysSinceLastActivity: typeof item.daysSinceLastActivity === 'number' ? item.daysSinceLastActivity : -1,
+            lastActivityEvidence: evidenceText,
+            daysSinceLastActivity: evidenceDays,
             trustScore: typeof item.trustScore === 'number' ? item.trustScore : 50,
             status: (Object.values(BusinessStatus).includes(item.status) ? item.status : BusinessStatus.UNKNOWN) as BusinessStatus,
             category: item.category || (isBroadSearch ? "Diversos" : segment),
