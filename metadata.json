@@ -1,5 +1,7 @@
 {
   "name": "VeriCorp: Inteligência Comercial IA",
   "description": "Um assistente com IA que busca, verifica e analisa leads de negócios baseado em segmento e região usando dados em tempo real.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "geolocation"
+  ]
 }

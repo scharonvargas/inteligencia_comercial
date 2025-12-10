@@ -79,12 +79,16 @@ const App: React.FC = () => {
     setResults([]); // Limpa resultados anteriores para começar do zero
     
     const regionLower = region.toLowerCase();
-    const isStreetLevel = /rua|av\.|avenida|travessa|alameda|rodovia|estrada/i.test(regionLower);
+    // Regex refinado para detectar nível de logradouro
+    const isStreetLevel = /rua|av\.|avenida|travessa|alameda|rodovia|estrada|pr\.|praça|largo/i.test(regionLower);
     const isNeighborhoodLevel = /bairro|jardim|centro|vila|parque/i.test(regionLower);
     
     let initMsg = "";
     if (isSweepMode) {
-      if (searchCoords) {
+      if (searchCoords && isStreetLevel) {
+        // Prioridade máxima: Coordenada + Contexto de Rua
+        initMsg = `Varredura de Precisão: Mapeando estabelecimentos na via exata (GPS: ${searchCoords.lat.toFixed(4)}, ${searchCoords.lng.toFixed(4)})...`;
+      } else if (searchCoords) {
         initMsg = `Analisando raio de alta precisão GPS (${searchCoords.lat.toFixed(4)}, ${searchCoords.lng.toFixed(4)})...`;
       } else if (isStreetLevel) {
         initMsg = "Iniciando varredura de alta precisão na via especificada...";
@@ -308,7 +312,7 @@ const App: React.FC = () => {
                          <p className="flex items-start gap-2">
                            <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
                            {isSweepMode 
-                             ? <span><strong>Especifique a via:</strong> Selecione o endereço exato no menu para que a IA busque <strong>apenas</strong> naquele local.</span>
+                             ? <span><strong>Especifique a via:</strong> Selecione o endereço exato no menu para que a IA busque <strong>apenas</strong> naquele local (matchType: EXACT).</span>
                              : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais".</span>
                            }
                          </p>
@@ -359,15 +363,16 @@ const App: React.FC = () => {
         {results.length > 0 && (
           <div className="animate-slideUp space-y-6 w-full">
              
-             {/* Map Component */}
-             <ResultsMap data={results} />
-             
              {/* Toggle View Components */}
              {viewMode === 'table' ? (
                 <ResultsTable data={results} />
              ) : (
                 <KanbanBoard data={results} onStageChange={handlePipelineChange} />
              )}
+
+             {/* Map Component (Moved to bottom) */}
+             <ResultsMap data={results} />
+             
           </div>
         )}
 

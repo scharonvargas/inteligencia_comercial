@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MapPin, Loader2, Globe, Navigation } from 'lucide-react';
+import { MapPin, Loader2, Globe, Navigation, Crosshair } from 'lucide-react';
 
 interface AddressAutocompleteProps {
   value: string;
@@ -26,9 +26,47 @@ interface CacheEntry {
   data: SuggestionResult[];
 }
 
-// Configuração do Cache
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutos em milissegundos
-const suggestionCache: Record<string, CacheEntry> = {};
+// --- Gerenciador de Cache Simples ---
+const AddressCache = {
+  store: {} as Record<string, CacheEntry>,
+  ttl: 15 * 60 * 1000, // 15 minutos
+
+  normalizeKey(term: string): string {
+    return term.trim().toLowerCase();
+  },
+
+  get(term: string): SuggestionResult[] | null {
+    const key = this.normalizeKey(term);
+    const entry = this.store[key];
+
+    if (!entry) return null;
+
+    // Verifica validade do cache
+    if (Date.now() - entry.timestamp > this.ttl) {
+      delete this.store[key];
+      return null;
+    }
+
+    return entry.data;
+  },
+
+  set(term: string, data: SuggestionResult[]) {
+    // Evita cachear resultados vazios ou erros
+    if (!data || data.length === 0) return;
+
+    // Limpeza preventiva simples se o cache crescer demais (> 200 entradas)
+    const keys = Object.keys(this.store);
+    if (keys.length > 200) {
+      delete this.store[keys[0]]; // Remove o mais antigo (aproximado)
+    }
+
+    const key = this.normalizeKey(term);
+    this.store[key] = {
+      timestamp: Date.now(),
+      data
+    };
+  }
+};
 
 export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
   value,
@@ -66,26 +104,89 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
     return 1;
   };
 
+  // --- Lógica de Geolocalização ---
+  const handleUseCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      alert("Geolocalização não suportada pelo seu navegador.");
+      return;
+    }
+
+    setIsLoading(true);
+    setIsOpen(false);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+
+        // 1. Notifica o componente pai com as coordenadas exatas imediatamente
+        if (onLocationSelect) {
+          onLocationSelect(latitude, longitude);
+        }
+
+        // 2. Geocodificação Reversa (Latitude/Longitude -> Texto)
+        // Tentamos obter um endereço legível para preencher o input
+        let addressText = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+        const apiKey = process.env.API_KEY;
+
+        try {
+          // Tentativa 1: Google Geocoding API (se chave disponível)
+          if (apiKey) {
+             const res = await fetch(
+               `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${apiKey}&language=pt-BR`
+             );
+             const data = await res.json();
+             if (data.status === 'OK' && data.results.length > 0) {
+                // Tenta pegar o endereço mais específico (geralmente o primeiro ou segundo)
+                addressText = data.results[0].formatted_address;
+             }
+          } else {
+             // Tentativa 2: OpenStreetMap (Nominatim) Fallback
+             // Respeitando User-Agent policy do Nominatim (embora browser client-side seja genérico)
+             const res = await fetch(
+               `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`
+             );
+             const data = await res.json();
+             if (data && data.display_name) {
+                // Simplifica o endereço do OSM que costuma ser muito longo
+                const parts = data.display_name.split(',');
+                // Pega os 3 primeiros componentes para ficar mais limpo (Rua, Bairro, Cidade)
+                addressText = parts.slice(0, 3).join(', ');
+             }
+          }
+        } catch (error) {
+          console.warn("Falha na geocodificação reversa:", error);
+          // Mantém as coordenadas como texto em caso de falha
+        }
+
+        onChange(addressText);
+        setIsLoading(false);
+      },
+      (error) => {
+        console.error("Erro ao obter localização:", error);
+        let msg = "Erro desconhecido ao obter localização.";
+        if (error.code === 1) msg = "Permissão de localização negada.";
+        if (error.code === 2) msg = "Sinal de GPS indisponível.";
+        if (error.code === 3) msg = "Tempo limite esgotado ao buscar localização.";
+        alert(msg);
+        setIsLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
   useEffect(() => {
     // Debounce de 300ms
     const delayDebounceFn = setTimeout(async () => {
       if (value.length > 3 && isOpen) {
-        const cacheKey = value.trim().toLowerCase();
-
-        // 1. VERIFICAÇÃO DE CACHE COM TTL
-        if (suggestionCache[cacheKey]) {
-          const entry = suggestionCache[cacheKey];
-          const isExpired = Date.now() - entry.timestamp > CACHE_TTL;
-
-          if (!isExpired) {
-            setSuggestions(entry.data);
-            setIsLoading(false);
-            return;
-          } else {
-            // Remove entrada expirada
-            delete suggestionCache[cacheKey];
-          }
+        
+        // --- 1. VERIFICAÇÃO DE CACHE ---
+        const cachedResults = AddressCache.get(value);
+        if (cachedResults) {
+          setSuggestions(cachedResults);
+          setIsLoading(false);
+          return; // Retorna antecipadamente se houver cache
         }
+        // -------------------------------
 
         setIsLoading(true);
         const apiKey = process.env.API_KEY;
@@ -154,13 +255,11 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
             }
         }
         
-        // Salva no cache com Timestamp se houver resultados
+        // --- SALVA NO CACHE ---
         if (resultsToCache.length > 0) {
-          suggestionCache[cacheKey] = {
-            timestamp: Date.now(),
-            data: resultsToCache
-          };
+          AddressCache.set(value, resultsToCache);
         }
+        // ----------------------
 
         setIsLoading(false);
       } else if (value.length <= 3) {
@@ -196,15 +295,30 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
         onFocus={() => value.length > 2 && setIsOpen(true)}
         placeholder={placeholder}
         disabled={disabled}
-        className={className}
+        className={`${className} pr-16`} // Adiciona padding à direita para ícones
         autoComplete="off"
       />
       
-      {isLoading && (
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 animate-spin">
-          <Loader2 size={16} />
-        </div>
-      )}
+      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+        {/* Botão de Localização Atual */}
+        {!isLoading && !value && (
+          <button
+            type="button"
+            onClick={handleUseCurrentLocation}
+            className="p-1.5 text-slate-400 hover:text-brand-400 hover:bg-slate-800 rounded-full transition-colors"
+            title="Usar minha localização atual"
+            disabled={disabled}
+          >
+            <Crosshair size={18} />
+          </button>
+        )}
+
+        {isLoading && (
+          <div className="text-slate-500 animate-spin p-1">
+            <Loader2 size={16} />
+          </div>
+        )}
+      </div>
 
       {isOpen && suggestions.length > 0 && (
         <ul className="absolute z-50 w-full bg-slate-800 border border-slate-700 rounded-lg mt-1 shadow-2xl max-h-60 overflow-y-auto custom-scrollbar animate-fadeIn">

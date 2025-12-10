@@ -1,9 +1,12 @@
 import React, { useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import MarkerClusterGroup from 'react-leaflet-cluster';
+import ReactLeafletCluster from 'react-leaflet-cluster';
 import L from 'leaflet';
 import { BusinessEntity, BusinessStatus } from '../types';
 import { MapPin, Phone, ExternalLink } from 'lucide-react';
+
+// Safe import for MarkerClusterGroup to handle different ESM/CDN export structures
+const MarkerClusterGroup = (ReactLeafletCluster as any).default || ReactLeafletCluster;
 
 // Correção para ícones padrão do Leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -39,6 +42,12 @@ export const ResultsMap: React.FC<ResultsMapProps> = ({ data }) => {
       default: return 'text-slate-400 font-bold';
     }
   };
+
+  // If MarkerClusterGroup is undefined (import failed), fallback to fragment or simple div to prevent crash
+  if (!MarkerClusterGroup) {
+      console.error("MarkerClusterGroup failed to load.");
+      return null;
+  }
 
   return (
     <div className="w-full h-96 bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg mb-8 relative z-0">

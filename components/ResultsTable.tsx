@@ -12,7 +12,11 @@ import {
 } from 'lucide-react';
 
 // Workaround for react-window import in ESM/CDN environments
-const List = (ReactWindow as any).default?.VariableSizeList || ReactWindow.VariableSizeList;
+// Tries multiple export locations for VariableSizeList
+const List = ReactWindow.VariableSizeList || 
+             (ReactWindow as any).default?.VariableSizeList || 
+             (ReactWindow as any).default || 
+             (window as any).ReactWindow?.VariableSizeList;
 
 // --- Leaflet Icon Fix ---
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -495,33 +499,16 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
 
         if (customDateStart) {
            const startDate = new Date(customDateStart);
-           // Data antiga = mais dias passados (ex: 1 jan 2024 = 300 dias atrás)
-           // Então Start Date define o LIMITE MÁXIMO de dias atrás
            const diffTime = Math.abs(today.getTime() - startDate.getTime());
            maxDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
         }
 
         if (customDateEnd) {
             const endDate = new Date(customDateEnd);
-            // Data recente = menos dias passados (ex: ontem = 1 dia atrás)
-            // Então End Date define o LIMITE MÍNIMO de dias atrás (geralmente próximo de 0)
             const diffTime = Math.abs(today.getTime() - endDate.getTime());
             minDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         }
 
-        // Correção de lógica: 
-        // Se usuário escolhe DE 01/01 (start) ATÉ 31/01 (end)
-        // Significa atividades que aconteceram ENTRE essas datas.
-        // Em "Dias Atrás": Start Date é o mais antigo (maior número), End Date é o mais recente (menor número).
-        
-        // Exemplo: Hoje = 01/02.
-        // Start: 01/01 => 31 dias atrás.
-        // End: 31/01 => 1 dia atrás.
-        // Lead deve ter days entre 1 e 31.
-        
-        // Se d.daysBetween(minDays, maxDays)
-        // OBS: Se o usuário inverter e colocar Start > End no input, a gente ajusta a lógica ou assume range.
-        
         const actualMin = Math.min(minDays, maxDays);
         const actualMax = Math.max(minDays, maxDays);
 
@@ -623,6 +610,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     handleGenerateEmail, generatedEmails, loadingEmailId, 
     copyToClipboard, copiedEmailId, handleViewMap
   ]);
+
+  if (!List) {
+    return <div className="text-red-500 p-4">Erro ao carregar componente de lista virtual.</div>;
+  }
 
   return (
     <div className="w-full h-full flex flex-col animate-fadeIn">

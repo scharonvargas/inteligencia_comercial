@@ -2,37 +2,65 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { BusinessEntity, BusinessStatus } from "../types";
 import { dbService } from "./dbService";
 
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+// --- Configuração de Cache Granular ---
 
-// Configuração de Cache com TTL (Time To Live)
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutos
+const TTL_CONFIG = {
+  BROAD_SWEEP: 120 * 60 * 1000, // 2 horas: Varreduras gerais (infraestrutura muda pouco)
+  DEFAULT: 30 * 60 * 1000,      // 30 minutos: Buscas segmentadas padrão
+  PRECISE: 15 * 60 * 1000       // 15 minutos: Buscas exatas/GPS (permite retry mais rápido)
+};
 
 interface CacheEntry {
   timestamp: number;
+  ttl: number; // TTL específico para esta entrada
   data: BusinessEntity[];
 }
 
-// Cache em memória para evitar chamadas repetidas na mesma sessão
+// Cache em memória
 const searchCache = new Map<string, CacheEntry>();
 
+/**
+ * Remove entradas expiradas com base em seus TTLs individuais.
+ */
 const pruneCache = () => {
   const now = Date.now();
   let deletedCount = 0;
+  
   for (const [key, entry] of searchCache.entries()) {
-    if (now - entry.timestamp > CACHE_TTL_MS) {
+    const isExpired = (now - entry.timestamp) > entry.ttl;
+    if (isExpired) {
       searchCache.delete(key);
       deletedCount++;
     }
   }
+  
   if (deletedCount > 0) {
     console.log(`🧹 Cache GC: ${deletedCount} entradas expiradas removidas.`);
   }
 };
 
+/**
+ * Limpa todo o cache manualmente.
+ */
 export const clearMemoryCache = () => {
   searchCache.clear();
-  console.log("🧹 Cache em memória limpo manualmente.");
+  console.log("🧹 Cache em memória limpo totalmente.");
+};
+
+/**
+ * Invalida entradas de cache específicas baseadas em correspondência de string.
+ * Útil para forçar recarregamento de uma região específica.
+ */
+export const invalidateSpecificCache = (term: string) => {
+  const termLower = term.toLowerCase().trim();
+  let count = 0;
+  for (const key of searchCache.keys()) {
+    if (key.includes(termLower)) {
+      searchCache.delete(key);
+      count++;
+    }
+  }
+  if (count > 0) console.log(`🧹 Invalidadas ${count} entradas de cache contendo "${term}".`);
 };
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -107,28 +135,37 @@ function restoreUrls(data: any, map: Map<string, string>): any {
 }
 
 /**
- * Analisa e limpa JSON proveniente da IA.
- * Implementa estratégia de proteção de URLs (Tokenização) antes de tentar corrigir o JSON.
+ * Analisa e limpa JSON proveniente da IA com alta robustez.
  */
 function cleanAndParseJSON(text: string): any[] {
   if (!text || text.trim().length === 0) return [];
 
   let cleaned = text;
 
-  // 1. Remover Markdown (```json ... ```) e Comentários
-  cleaned = cleaned.replace(/```json/gi, "").replace(/```/g, "").replace(/\/\/.*$/gm, "");
+  // 1. Extrair conteúdo de blocos de código Markdown (prioridade)
+  const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch) {
+    cleaned = codeBlockMatch[1];
+  }
 
-  // 2. Proteção de URLs (Extração e Tokenização)
-  // Isso evita que caracteres em URLs (:, /, ?) quebrem a lógica de correção de chaves JSON
+  // 2. Remover comentários JS (// ou /* */)
+  cleaned = cleaned.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // 3. Remover citações de grounding (ex: [1], [2]) que quebram JSON
+  // Cuidado para não remover arrays válidos. Removemos apenas se parecer citação isolada.
+  cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, ""); 
+
+  // 4. Correção preliminar de URLs malformadas comuns em LLMs
+  cleaned = cleaned.replace(/(https?|ftp)\s*:\s*\/\/\s*/yi, "$1://");
+
+  // 5. Proteção de URLs (Extração e Tokenização)
   const urlMap = new Map<string, string>();
   let urlCounter = 0;
 
-  // Regex para capturar URLs http/https/www. 
-  // Evita capturar aspas ou chaves de fechamento no final.
-  const urlRegex = /(?:https?:\/\/[^\s"'}]+)|(?:www\.[^\s"'}]+)/g;
+  // Regex aprimorada para capturar URLs
+  const urlRegex = /((?:https?:\/\/(?:www\.)?|(?:www\.))[^\s"'{}\],]+)/gi;
 
   cleaned = cleaned.replace(urlRegex, (match) => {
-    // Remove pontuação final indesejada (ex: vírgula ou chave se a IA colou o texto)
     let url = match;
     const trailing = url.match(/[),;\]}]+$/);
     let suffix = "";
@@ -136,39 +173,35 @@ function cleanAndParseJSON(text: string): any[] {
         suffix = trailing[0];
         url = url.slice(0, -trailing[0].length);
     }
-    
+    if (url.endsWith('.')) url = url.slice(0, -1);
+
     const token = `__URL_PLACEHOLDER_${urlCounter++}__`;
     urlMap.set(token, url);
     return token + suffix;
   });
 
-  // 3. Tentativa Direta (Melhor Cenário)
+  // 6. Limpeza de Sintaxe JSON
+  cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
+  cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+
+  // 7. Tentativa de Parse Direto (Melhor Cenário)
   try {
     const parsed = JSON.parse(cleaned);
     const restored = restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
     return restored;
   } catch (e) {
-    // Falhou, continuar processamento por blocos
+    // Falha silenciosa
   }
 
-  // 4. Estratégia de Extração de Múltiplos Objetos/Arrays
+  // 8. Estratégia de Extração de Múltiplos Objetos/Arrays (Fallback)
   const results: any[] = [];
-  
-  // Regex para capturar objetos JSON {...} ou Arrays [...]
   const objectOrArrayRegex = /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})|(\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\])/g;
 
   let match;
   while ((match = objectOrArrayRegex.exec(cleaned)) !== null) {
     const jsonStr = match[0];
     try {
-      // Tenta corrigir aspas em chaves não cotadas (ex: { name: "X" } -> { "name": "X" })
-      // Como as URLs estão protegidas como tokens simples, essa regex é segura.
-      let fixedJsonStr = jsonStr.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
-      
-      // Correção opcional: trocar aspas simples por duplas (comum em output de IA agindo como JS)
-      // Seguro fazer aqui pois strings de URL já estão fora.
-      fixedJsonStr = fixedJsonStr.replace(/'/g, '"');
-      
+      const fixedJsonStr = jsonStr.replace(/'/g, '"');
       const parsed = JSON.parse(fixedJsonStr);
       const restored = restoreUrls(parsed, urlMap);
       
@@ -178,23 +211,20 @@ function cleanAndParseJSON(text: string): any[] {
         results.push(restored);
       }
     } catch (err) {
-      // Se a correção falhar, tenta o JSON original do bloco
-      try {
-        const parsedOriginal = JSON.parse(jsonStr);
-        const restored = restoreUrls(parsedOriginal, urlMap);
-        if (Array.isArray(restored)) results.push(...restored);
-        else if (typeof restored === 'object') results.push(restored);
-      } catch (finalErr) {
-        // Ignora bloco inválido
-      }
+       // Ignora fragmentos inválidos
     }
+  }
+
+  if (results.length === 0 && text.length > 50) {
+     console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:", text.substring(0, 500) + "...");
   }
 
   return results;
 }
 
 /**
- * Função Wrapper com Retry e Structured Output (JSON Schema)
+ * Função Wrapper com Retry, Backoff Exponencial Aprimorado e Logs Detalhados.
+ * NOTA: responseMimeType e responseSchema foram removidos para compatibilidade com a ferramenta googleSearch.
  */
 async function generateContentWithRetry(
   modelId: string, 
@@ -204,62 +234,89 @@ async function generateContentWithRetry(
 ): Promise<any> {
   let attempt = 0;
   
-  // Definição do Schema para Output Estruturado (JSON garantido)
-  const businessSchema = {
-    type: Type.ARRAY,
-    items: {
-      type: Type.OBJECT,
-      properties: {
-        name: { type: Type.STRING },
-        address: { type: Type.STRING },
-        phone: { type: Type.STRING, nullable: true },
-        website: { type: Type.STRING, nullable: true },
-        socialLinks: { type: Type.ARRAY, items: { type: Type.STRING } },
-        lastActivityEvidence: { type: Type.STRING },
-        daysSinceLastActivity: { type: Type.INTEGER },
-        trustScore: { type: Type.INTEGER },
-        status: { type: Type.STRING },
-        category: { type: Type.STRING },
-        lat: { type: Type.NUMBER, nullable: true },
-        lng: { type: Type.NUMBER, nullable: true },
-        matchType: { type: Type.STRING }
-      },
-      required: ["name", "address", "trustScore", "matchType", "socialLinks"]
-    }
-  };
+  // Configurações de Backoff
+  const BASE_DELAY = 2500; // 2.5s base
+  const MAX_DELAY = 20000; // 20s teto
 
   while (attempt < maxRetries) {
     try {
+      const apiKey = process.env.API_KEY;
+      
+      if (!apiKey) {
+        throw new Error("API_KEY_MISSING: A chave da API não foi detectada no ambiente.");
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      
+      console.debug(`[Gemini API] 🔄 Tentativa ${attempt + 1}/${maxRetries} iniciada...`);
+      
       const response = await ai.models.generateContent({
         model: modelId,
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
-          temperature: isBroadSearch ? 0.6 : 0.4,
-          responseMimeType: "application/json", // Força JSON
-          responseSchema: businessSchema, // Força estrutura
+          temperature: isBroadSearch ? 0.65 : 0.4,
+          // Safety Settings para evitar bloqueios em buscas comerciais
+          safetySettings: [
+             { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+             { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+             { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+             { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+          ]
         },
       });
+      
+      // Validação básica se há conteúdo
+      if (!response || (!response.text && !response.candidates?.[0]?.content)) {
+         throw new Error("RESPOSTA_VAZIA: A IA não retornou conteúdo de texto.");
+      }
+
       return response;
+
     } catch (error: any) {
       attempt++;
       
-      console.warn(`[Gemini API] Falha na tentativa ${attempt}/${maxRetries}.`);
-      console.warn(`[Gemini API] Status: ${error.status || 'N/A'}`);
-      console.warn(`[Gemini API] Message: ${error.message}`);
+      // Extração segura de detalhes do erro
+      const status = error.status || error.response?.status;
+      const statusText = error.statusText || error.response?.statusText || 'Erro Desconhecido';
+      const errorMessage = error.message || 'Sem mensagem de erro';
+      const errorBody = error.error || error.response?.data;
+
+      // Logs Detalhados
+      console.groupCollapsed(`[Gemini API] ❌ Erro na tentativa ${attempt}/${maxRetries}`);
+      console.warn(`Status: ${status} (${statusText})`);
+      console.warn(`Mensagem: ${errorMessage}`);
+      if (errorBody) console.warn('Corpo do Erro:', errorBody);
+      console.groupEnd();
       
-      if (error.message?.includes('API_KEY') || error.status === 400 || error.status === 403) {
+      // Classificação de Erros Fatais (Não adianta retentar)
+      const isFatal = 
+          errorMessage.includes('API_KEY') || 
+          errorMessage === "API_KEY_MISSING" ||
+          status === 400 || // Bad Request
+          status === 401 || // Unauthorized
+          (status === 403 && !errorMessage.toLowerCase().includes('quota')); // Forbidden (exceto quota)
+
+      if (isFatal) {
+        console.error(`[Gemini API] 🛑 Erro fatal detectado. Abortando retentativas.`);
         throw error;
       }
 
-      if (attempt >= maxRetries) throw error;
+      if (attempt >= maxRetries) {
+        console.error(`[Gemini API] 🛑 Limite de tentativas excedido (${maxRetries}).`);
+        throw error;
+      }
 
-      // Exponential Backoff with Jitter
-      const baseDelay = 1000 * Math.pow(2, attempt - 1);
-      const jitter = Math.random() * 500;
-      const delay = Math.min(baseDelay + jitter, 10000);
+      // Cálculo de Backoff Exponencial com "Full Jitter"
+      // Delay = min(MAX, (BASE * 2^(attempt-1)) + random_jitter)
+      const exponentialBackoff = BASE_DELAY * Math.pow(2, attempt - 1);
       
-      console.log(`[Gemini API] Aguardando ${Math.round(delay)}ms antes de tentar novamente...`);
+      // Jitter proporcional (até 50% do valor base atual) para distribuir a carga
+      const jitter = Math.random() * (exponentialBackoff * 0.5); 
+      
+      const delay = Math.min(exponentialBackoff + jitter, MAX_DELAY);
+      
+      console.log(`[Gemini API] ⏳ Aguardando ${Math.round(delay)}ms antes da próxima tentativa...`);
       await wait(delay);
     }
   }
@@ -273,8 +330,8 @@ export const fetchAndAnalyzeBusinesses = async (
   onBatchResults: (results: BusinessEntity[]) => void,
   coordinates?: { lat: number, lng: number } | null
 ): Promise<BusinessEntity[]> => {
-  if (!apiKey) {
-    throw new Error("A chave da API está ausente.");
+  if (!process.env.API_KEY) {
+    throw new Error("A chave da API está ausente. Selecione uma chave paga para continuar.");
   }
 
   pruneCache();
@@ -283,7 +340,8 @@ export const fetchAndAnalyzeBusinesses = async (
   
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
-    if (Date.now() - entry.timestamp < CACHE_TTL_MS) {
+    // Verifica o TTL específico dessa entrada
+    if (Date.now() - entry.timestamp < entry.ttl) {
       onProgress("⚡ Recuperando resultados do cache instantâneo...");
       const cachedData = entry.data;
       await wait(300); 
@@ -340,14 +398,23 @@ export const fetchAndAnalyzeBusinesses = async (
         LOCALIZAÇÃO ALVO: "${region}".
         ${coordinates ? `📍 PONTO DE ANCORAGEM (GPS PRECISO): Lat ${coordinates.lat}, Lng ${coordinates.lng}.` : ''}
 
-        2. ANÁLISE DE ESCOPO E PRIORIDADE (CRÍTICO):
-           - Se a região for ESPECÍFICA (Rua, Avenida): Liste estabelecimentos com fachada ativa na via.
-           - Se a região for AMPLA (Bairro, Cidade, Região): A prioridade é ABSOLUTA para serviços de "Alta Relevância Pública".
+        2. ANÁLISE DE LOCALIZAÇÃO E PRECISÃO (CRÍTICO):
+           - ANALISE SEMANTICAMENTE O INPUT DE LOCAL: É uma RUA/AVENIDA específica ou uma região (Bairro/Cidade)?
+           
+           [CENÁRIO A: INPUT É UMA VIA ESPECÍFICA (Rua, Av, Alameda)]
+           - PRIORIDADE ABSOLUTA: Liste APENAS empresas com fachada ativa nesta via exata.
+           - OBRIGATÓRIO: Defina \`matchType: "EXACT"\`.
+           - Utilize as coordenadas fornecidas como centro da via e expanda linearmente.
+           - Ignore estabelecimentos em ruas paralelas se não forem esquinas.
+           
+           [CENÁRIO B: INPUT É UM BAIRRO OU CIDADE]
+           - Comportamento padrão de varredura em espiral a partir do centro.
+           - Defina \`matchType: "NEARBY"\`.
 
-        3. HIERARQUIA DE RELEVÂNCIA (MODO VARREDURA GERAL):
+        3. HIERARQUIA DE RELEVÂNCIA (Priority Queue):
            A IA deve priorizar a extração de empresas essenciais e de grande circulação antes de buscar nichos específicos.
 
-           ORDEM OBRIGATÓRIA DE EXTRAÇÃO (Priority Queue):
+           ORDEM OBRIGATÓRIA DE EXTRAÇÃO:
            
            [NÍVEL 1 - ESSENCIAIS E ALTA CIRCULAÇÃO] (Prioridade Máxima):
            - Mercados, Supermercados, Atacadistas, Hortifrutis.
@@ -364,11 +431,7 @@ export const fetchAndAnalyzeBusinesses = async (
            [NÍVEL 3 - NICHOS] (Apenas se não houver dados suficientes nos níveis acima):
            - Lojas especializadas, Consultórios, Escritórios, Academias, Salões de Beleza pequenos.
 
-           *REGRA DE OURO:* Em varreduras gerais, ignore "lojas de nicho" (ex: loja de botão, consultório de psicologia) até que os estabelecimentos essenciais (Nível 1) tenham sido listados. O foco é INFRAESTRUTURA COMERCIAL.
-
-        4. INSTRUÇÃO GEOGRÁFICA:
-           - Utilize as coordenadas como centro.
-           - Varra do centro para a periferia buscando essas categorias prioritárias.
+           *REGRA DE OURO:* Se estiver no [CENÁRIO A] (Via Específica), ignore a hierarquia de nicho se necessário para preencher com QUALQUER comércio ativo na rua, mas priorize os essenciais primeiro.
       `;
     } else {
       promptTask = `
@@ -379,6 +442,7 @@ export const fetchAndAnalyzeBusinesses = async (
       `;
     }
 
+    // Definindo estrutura JSON explícita no prompt
     const prompt = `
       Atue como um Especialista em Geomarketing.
       
@@ -388,27 +452,56 @@ export const fetchAndAnalyzeBusinesses = async (
       
       5. EXCLUSÃO: Não repita: [${exclusionList}].
       
-      6. DADOS OBRIGATÓRIOS (Schema Enforcement):
-         - matchType: "EXACT" ou "NEARBY".
-         - trustScore: 0-100.
-         - lastActivityEvidence: SEJA ESPECÍFICO. Se a evidência for vaga (ex: "Post recente"), INFIRA a data ou período pelo contexto sazonal (ex: "Post de Natal" -> "Dezembro 2024").
-         - daysSinceLastActivity: Número inteiro.
-         - socialLinks: Array de strings (URLs).
-      
-      O output DEVE obedecer estritamente ao Schema JSON fornecido.
+      6. FORMATO DE SAÍDA OBRIGATÓRIO (JSON ARRAY):
+      Você DEVE retornar APENAS um JSON válido contendo uma lista de objetos.
+      NÃO escreva introduções, NÃO coloque citações de fontes como [1], apenas o JSON cru.
+
+      Estrutura do JSON:
+      [
+        {
+          "name": "Nome da Empresa",
+          "address": "Endereço completo",
+          "phone": "Telefone ou null",
+          "website": "URL ou null",
+          "socialLinks": ["URL1", "URL2"],
+          "lastActivityEvidence": "Texto específico sobre evidência recente",
+          "daysSinceLastActivity": 2,
+          "trustScore": 85,
+          "status": "Ativo",
+          "category": "Categoria",
+          "matchType": "EXACT",
+          "lat": -23.55,
+          "lng": -46.63
+        }
+      ]
+
+      REGRAS DE DADOS:
+       - matchType: Use "EXACT" se estiver na rua/local solicitado, "NEARBY" se for próximo.
+       - NÃO inclua markdown (como \`\`\`json), apenas o JSON puro se possível.
     `;
 
     try {
       const response = await generateContentWithRetry(modelId, prompt, isBroadSearch);
 
-      const rawText = response.text || "[]";
+      // Tratamento robusto para extrair texto da resposta
+      const rawText = response.text || 
+                      response.candidates?.[0]?.content?.parts?.[0]?.text || 
+                      "[]";
+      
+      // Log de Debug para entender o que a IA está retornando
+      if (attempts === 1) {
+        console.debug("--- RAW AI RESPONSE (SAMPLE) ---");
+        console.debug(rawText.substring(0, 500) + "...");
+      }
+
       let batchData: any[] = [];
       
       // Usa a função de parse aprimorada para lidar com múltiplos objetos/formatos e URLs quebradas
       batchData = cleanAndParseJSON(rawText);
 
       if (!batchData || batchData.length === 0) {
-        onProgress("Expandindo raio de busca...");
+        onProgress("IA retornou dados fora do formato. Tentando novamente...");
+        console.warn("Parse result was empty.");
         if (attempts >= maxLoops) break;
         continue;
       }
@@ -436,9 +529,10 @@ export const fetchAndAnalyzeBusinesses = async (
            let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
            if (item.matchType === 'NEARBY' || item.matchType === 'CITY_WIDE') {
              finalMatchType = 'NEARBY';
+           } else {
+             finalMatchType = 'EXACT';
            }
 
-           // Refinamento de métricas de atividade (Inferência)
            const { text: evidenceText, days: evidenceDays } = refineActivityMetrics(item.lastActivityEvidence, item.daysSinceLastActivity);
 
            const entity: BusinessEntity = {
@@ -479,7 +573,7 @@ export const fetchAndAnalyzeBusinesses = async (
       console.warn(`Erro no lote ${attempts}:`, error);
       if (allEntities.length > 0) break; 
       if (allEntities.length === 0 && attempts === 1) {
-          throw new Error("Falha na conexão com a IA.");
+          throw new Error(error.message || "Falha na conexão com a IA.");
       }
     }
   }
@@ -487,8 +581,17 @@ export const fetchAndAnalyzeBusinesses = async (
   onProgress(`Concluído! ${allEntities.length} resultados.`);
   
   if (allEntities.length > 0) {
+    // Determina o TTL baseado no tipo de busca
+    let currentTTL = TTL_CONFIG.DEFAULT;
+    if (isBroadSearch) {
+      currentTTL = TTL_CONFIG.BROAD_SWEEP;
+    } else if (coordinates) {
+      currentTTL = TTL_CONFIG.PRECISE;
+    }
+
     searchCache.set(cacheKey, {
       timestamp: Date.now(),
+      ttl: currentTTL,
       data: allEntities
     });
   }
@@ -497,7 +600,7 @@ export const fetchAndAnalyzeBusinesses = async (
 };
 
 export const generateOutreachEmail = async (business: BusinessEntity): Promise<string> => {
-  if (!apiKey) throw new Error("Chave API não configurada.");
+  if (!process.env.API_KEY) throw new Error("Chave API não configurada.");
 
   const prompt = `
     Escreva um "Cold Email" B2B para: ${business.name} (${business.category}).
@@ -507,6 +610,7 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
   `;
 
   try {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: prompt,
