@@ -34,9 +34,9 @@ type ActivityFilter = 'all' | '30days' | '90days' | 'custom';
 type LocationFilter = 'all' | 'exact';
 
 // --- Constants & Styles ---
-const ROW_HEIGHT = 76; // Altura da linha contraída
+// --- Constants & Styles ---
 const EXPANDED_CONTENT_HEIGHT = 500; // Altura aproximada do conteúdo expandido
-const GRID_TEMPLATE = "50px 50px minmax(200px, 1.5fr) 120px 140px 140px 80px"; // Definição das colunas
+// ROW_HEIGHT and GRID_TEMPLATE moved to component state for responsiveness
 
 // --- Helpers ---
 
@@ -183,18 +183,79 @@ interface VirtualRowProps {
     onCopyEmail: (text: string, id: string) => void;
     copiedEmailId: string | null;
     onViewMap: (biz: BusinessEntity) => void;
+    isMobile: boolean;
   }
 }
+
+const DESKTOP_GRID_TEMPLATE = "50px 50px minmax(200px, 1.5fr) 120px 140px 140px 80px";
 
 const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
   const biz = data.items[index];
   const isExpanded = data.expandedRowId === biz.id;
-  const { toggleRow, onToggleProspect, onGenerateEmail, generatedEmails, loadingEmailId, onCopyEmail, copiedEmailId, onViewMap } = data;
+  const { toggleRow, onToggleProspect, onGenerateEmail, generatedEmails, loadingEmailId, onCopyEmail, copiedEmailId, onViewMap, isMobile } = data;
 
   const generatedEmail = generatedEmails[biz.id];
   const loadingEmail = loadingEmailId === biz.id;
 
   const waUrl = biz.phone ? createWhatsAppUrl(biz.phone, biz.name) : '#';
+
+  if (isMobile) {
+    // Mobile Card View
+    return (
+      <div style={style} className="px-2 pb-2">
+        <div className={`rounded-xl border border-slate-700/50 p-4 transition-all ${isExpanded ? 'bg-slate-800 border-brand-500/50' : 'bg-slate-800/50 hover:bg-slate-800'}`}>
+          <div className="flex justify-between items-start mb-3" onClick={() => toggleRow(biz.id)}>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={(e) => onToggleProspect(e, biz)}
+                className="p-1 rounded-full bg-slate-700/50"
+              >
+                <Star size={16} className={biz.isProspect ? "fill-amber-400 text-amber-400" : "text-slate-500"} />
+              </button>
+              <div>
+                <div className="font-bold text-slate-100 line-clamp-1">{biz.name}</div>
+                <div className="flex items-center gap-2 mt-1">
+                  {(() => {
+                    const scoreData = leadScoreService.calculateScore(biz);
+                    const label = leadScoreService.getScoreLabel(scoreData.score);
+                    return <span className={`text-[10px] ${label.color}`}>{label.emoji} {label.label}</span>;
+                  })()}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full border ${getStatusColor(biz.status)}`}>
+                    {biz.status}
+                  </span>
+                </div>
+              </div>
+            </div>
+            {isExpanded ? <ChevronUp size={20} className="text-slate-500" /> : <ChevronDown size={20} className="text-slate-500" />}
+          </div>
+
+          <div className="flex items-center gap-4 text-xs text-slate-400 mb-3" onClick={() => toggleRow(biz.id)}>
+            {biz.phone && (
+              <div className="flex items-center gap-1.5">
+                <Phone size={12} /> {biz.phone}
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              <MapPin size={12} /> {biz.matchType === 'NEARBY' ? 'Próximo' : 'Local'}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            {biz.phone && (
+              <a href={waUrl} target="_blank" rel="noopener noreferrer" className="flex-1 bg-emerald-500/10 text-emerald-400 py-2 rounded-lg flex items-center justify-center gap-2 text-xs font-medium border border-emerald-500/20">
+                <MessageCircle size={14} /> WhatsApp
+              </a>
+            )}
+            <button onClick={() => toggleRow(biz.id)} className="flex-1 bg-slate-700 text-slate-300 py-2 rounded-lg text-xs font-medium">
+              Detalhes
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop Grid View
 
   return (
     <div style={style} className="px-2">
@@ -205,7 +266,7 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
         <div
           onClick={() => toggleRow(biz.id)}
           className="grid items-center gap-4 py-4 px-2 cursor-pointer"
-          style={{ gridTemplateColumns: GRID_TEMPLATE }}
+          style={{ gridTemplateColumns: DESKTOP_GRID_TEMPLATE }}
         >
           {/* 1. Chevron */}
           <div className="flex justify-center text-slate-500">
@@ -465,6 +526,17 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
 // --- Main Component ---
 
 export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
+  // State for responsiveness
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  const isMobile = windowWidth < 768; // md breakpoint
+
+  // Update window width on resize
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [localData, setLocalData] = useState<BusinessEntity[]>(data);
   const [statusFilter, setStatusFilter] = useState<string>('Todos');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all');
@@ -531,6 +603,13 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
       return true;
     });
   }, [localData, statusFilter, activityFilter, locationFilter, customDateStart, customDateEnd]);
+
+  // Reset layout when data or view mode changes
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.resetAfterIndex(0);
+    }
+  }, [filteredData, isMobile, expandedRowId]);
 
   // Actions
   const toggleRow = useCallback((id: string) => {
@@ -635,7 +714,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   // Função para calcular altura da linha dinamicamente
   const getItemSize = (index: number) => {
     const item = filteredData[index];
-    return expandedRowId === item.id ? (ROW_HEIGHT + EXPANDED_CONTENT_HEIGHT) : ROW_HEIGHT;
+    const baseHeight = isMobile ? 220 : 76; // baseHeight replaces ROW_HEIGHT
+    return expandedRowId === item.id ? (baseHeight + EXPANDED_CONTENT_HEIGHT) : baseHeight;
   };
 
   // OTIMIZAÇÃO: Memoizar o objeto itemData passado para a lista
@@ -649,11 +729,12 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     loadingEmailId,
     onCopyEmail: copyToClipboard,
     copiedEmailId,
-    onViewMap: handleViewMap
+    onViewMap: handleViewMap,
+    isMobile
   }), [
     filteredData, expandedRowId, toggleRow, handleToggleProspect,
     handleGenerateEmail, generatedEmails, loadingEmailId,
-    copyToClipboard, copiedEmailId, handleViewMap
+    copyToClipboard, copiedEmailId, handleViewMap, isMobile
   ]);
 
   if (!List) {

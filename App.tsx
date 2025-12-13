@@ -13,6 +13,7 @@ import { SearchHistory } from './components/SearchHistory';
 import { LeadListsManager } from './components/LeadLists';
 import { Dashboard } from './components/Dashboard';
 import { MessageTemplates } from './components/MessageTemplates';
+import { OnboardingModal } from './components/OnboardingModal';
 import {
   Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info,
   LayoutList, KanbanSquare, Trash2, Check, Settings, LogOut, BarChart3, Tag, MessageSquare
@@ -70,6 +71,9 @@ const App: React.FC = () => {
   // Estado para Message Templates
   const [showTemplates, setShowTemplates] = useState(false);
 
+  // Estado para Onboarding
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
   // Estado para prospects
   const [prospects, setProspects] = useState<BusinessEntity[]>([]);
 
@@ -92,6 +96,12 @@ const App: React.FC = () => {
       setDbStatus(isConnected ? 'online' : 'offline');
     };
     checkDb();
+
+    // Check onboarding
+    const hasSeen = localStorage.getItem('vericorp_has_seen_onboarding');
+    if (!hasSeen) {
+      setTimeout(() => setShowOnboarding(true), 2000);
+    }
   }, []);
 
   // Load initial rate limit count
@@ -564,6 +574,10 @@ const App: React.FC = () => {
       <LeadListsManager isOpen={showLeadLists} onClose={() => setShowLeadLists(false)} />
       <Dashboard isOpen={showDashboard} onClose={() => setShowDashboard(false)} prospects={prospects} />
       <MessageTemplates isOpen={showTemplates} onClose={() => setShowTemplates(false)} />
+      <OnboardingModal isOpen={showOnboarding} onClose={() => {
+        setShowOnboarding(false);
+        localStorage.setItem('vericorp_has_seen_onboarding', 'true');
+      }} />
     </div>
   );
 };
