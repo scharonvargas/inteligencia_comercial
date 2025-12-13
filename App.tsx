@@ -6,8 +6,8 @@ import { ResultsMap } from './components/ResultsMap';
 import { KanbanBoard } from './components/KanbanBoard';
 import { AddressAutocomplete } from './components/AddressAutocomplete';
 import { dbService } from './services/dbService';
-import { 
-  Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info, 
+import {
+  Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info,
   LayoutList, KanbanSquare, Trash2, Check
 } from 'lucide-react';
 
@@ -27,21 +27,33 @@ const App: React.FC = () => {
   });
 
   // Estado para coordenadas geográficas precisas
-  const [searchCoords, setSearchCoords] = useState<{lat: number, lng: number} | null>(null);
+  const [searchCoords, setSearchCoords] = useState<{ lat: number, lng: number } | null>(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
   const [results, setResults] = useState<BusinessEntity[]>([]);
   const [error, setError] = useState<string | null>(null);
-  
+
   // Controle de Visualização
   const [viewMode, setViewMode] = useState<'table' | 'kanban'>('table');
-  
+
   // Status do Banco de Dados
   const [dbStatus, setDbStatus] = useState<'loading' | 'online' | 'offline'>('loading');
-  
+
   // Estado para feedback de limpeza de cache
   const [cacheCleaned, setCacheCleaned] = useState(false);
+
+  // Ref para controle de cancelamento de busca
+  const abortControllerRef = React.useRef<AbortController | null>(null);
+
+  const handleStopSearch = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsLoading(false);
+      setProgressMsg("⚠️ Busca interrompida pelo usuário.");
+    }
+  }, []);
 
   const hasKey = !!process.env.API_KEY;
   const isSweepMode = segment.trim() === '';
@@ -49,8 +61,8 @@ const App: React.FC = () => {
   // Verificar conexão com BD ao iniciar
   useEffect(() => {
     const checkDb = async () => {
-       const isConnected = await dbService.testConnection();
-       setDbStatus(isConnected ? 'online' : 'offline');
+      const isConnected = await dbService.testConnection();
+      setDbStatus(isConnected ? 'online' : 'offline');
     };
     checkDb();
   }, []);
@@ -62,27 +74,35 @@ const App: React.FC = () => {
     // Persistir parâmetros
     localStorage.setItem(STORAGE_KEYS.SEGMENT, segment);
     localStorage.setItem(STORAGE_KEYS.REGION, region);
-    localStorage.setItem(STORAGE_KEYS.MAX_RESULTS,String(maxResults));
+    localStorage.setItem(STORAGE_KEYS.MAX_RESULTS, String(maxResults));
 
     if (!hasKey) {
-        try {
-            if (window.aistudio && window.aistudio.openSelectKey) {
-                await window.aistudio.openSelectKey();
-            }
-        } catch (err) {
-            setError("Sistema de Chave API indisponível. Verifique se o ambiente está configurado.");
+      try {
+        if (window.aistudio && window.aistudio.openSelectKey) {
+          await window.aistudio.openSelectKey();
         }
+      } catch (err) {
+        setError("Sistema de Chave API indisponível. Verifique se o ambiente está configurado.");
+      }
     }
 
     setIsLoading(true);
     setError(null);
     setResults([]); // Limpa resultados anteriores para começar do zero
-    
+
+    // Aborta busca anterior se houver (safety check)
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    // Cria novo controlador
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const regionLower = region.toLowerCase();
     // Regex refinado para detectar nível de logradouro
     const isStreetLevel = /rua|av\.|avenida|travessa|alameda|rodovia|estrada|pr\.|praça|largo/i.test(regionLower);
     const isNeighborhoodLevel = /bairro|jardim|centro|vila|parque/i.test(regionLower);
-    
+
     let initMsg = "";
     if (isSweepMode) {
       if (searchCoords && isStreetLevel) {
@@ -104,20 +124,21 @@ const App: React.FC = () => {
 
     try {
       const searchSegment = isSweepMode ? "Varredura Geral (Multisetorial)" : segment;
-      
+
       // STREAMING: Passamos um callback extra para receber lotes de dados
       await fetchAndAnalyzeBusinesses(
-        searchSegment, 
-        region, 
-        maxResults, 
+        searchSegment,
+        region,
+        maxResults,
         (msg) => setProgressMsg(msg),
         (newBatch) => {
-           // Callback executado a cada lote encontrado
-           setResults(prev => [...prev, ...newBatch]);
+          // Callback executado a cada lote encontrado
+          setResults(prev => [...prev, ...newBatch]);
         },
-        searchCoords // Passamos as coordenadas opcionais
+        searchCoords, // Passamos as coordenadas opcionais
+        controller.signal // Passamos o sinal de aborto
       );
-      
+
       // Nota: fetchAndAnalyzeBusinesses retorna o array completo no final, 
       // mas já fomos atualizando o estado via callback, então não precisamos setar de novo aqui
       // a menos que queiramos garantir sincronia total.
@@ -132,10 +153,10 @@ const App: React.FC = () => {
   // Handler para atualizar o estágio no Kanban (e refletir na lista principal)
   const handlePipelineChange = useCallback(async (businessId: string, newStage: string) => {
     // 1. Atualiza UI localmente
-    setResults(prev => prev.map(b => 
+    setResults(prev => prev.map(b =>
       b.id === businessId ? { ...b, pipelineStage: newStage } : b
     ));
-    
+
     // 2. Persiste no BD
     await dbService.updatePipelineStage(businessId, newStage);
   }, []);
@@ -169,34 +190,34 @@ const App: React.FC = () => {
             <h1 className="text-xl font-bold tracking-tight text-white">VeriCorp <span className="text-slate-500 font-normal">| AI Scout</span></h1>
           </div>
           <div className="flex items-center gap-4">
-             {/* View Toggle */}
-             {results.length > 0 && (
-               <div className="bg-slate-800 p-1 rounded-lg flex border border-slate-700">
-                  <button 
-                    onClick={() => setViewMode('table')}
-                    className={`p-1.5 rounded transition-colors ${viewMode === 'table' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                    title="Visualização em Lista"
-                  >
-                    <LayoutList size={18} />
-                  </button>
-                  <button 
-                    onClick={() => setViewMode('kanban')}
-                    className={`p-1.5 rounded transition-colors ${viewMode === 'kanban' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                    title="Visualização Kanban"
-                  >
-                    <KanbanSquare size={18} />
-                  </button>
-               </div>
-             )}
-             <div className="text-xs text-slate-500 hidden md:block">
+            {/* View Toggle */}
+            {results.length > 0 && (
+              <div className="bg-slate-800 p-1 rounded-lg flex border border-slate-700">
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`p-1.5 rounded transition-colors ${viewMode === 'table' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  title="Visualização em Lista"
+                >
+                  <LayoutList size={18} />
+                </button>
+                <button
+                  onClick={() => setViewMode('kanban')}
+                  className={`p-1.5 rounded transition-colors ${viewMode === 'kanban' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  title="Visualização Kanban"
+                >
+                  <KanbanSquare size={18} />
+                </button>
+              </div>
+            )}
+            <div className="text-xs text-slate-500 hidden md:block">
               Gemini 2.5 Flash
-             </div>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 flex-grow w-full">
-        
+
         {/* Intro / Search Section */}
         <section className="max-w-5xl mx-auto mb-8 text-center">
           {results.length === 0 && !isLoading && (
@@ -211,120 +232,128 @@ const App: React.FC = () => {
           )}
 
           {!hasKey && (
-             <div className="mb-6 p-4 bg-amber-900/20 border border-amber-500/50 text-amber-200 rounded-lg text-sm flex items-center justify-center gap-2">
-                 <Key size={16} />
-                 <span>Chave API necessária.</span>
-             </div>
+            <div className="mb-6 p-4 bg-amber-900/20 border border-amber-500/50 text-amber-200 rounded-lg text-sm flex items-center justify-center gap-2">
+              <Key size={16} />
+              <span>Chave API necessária.</span>
+            </div>
           )}
 
           {/* Form Container */}
           <form onSubmit={handleSearch} className="bg-slate-900 p-3 rounded-2xl border border-slate-800 shadow-2xl relative z-10 mx-auto w-full">
             <div className="grid grid-cols-1 md:grid-cols-[1.5fr_1px_1.5fr_1px_auto_auto] gap-3 md:gap-0 items-center">
-               
-               {/* Input: Segmento */}
-               <div className="relative group w-full">
-                  {isSweepMode ? (
-                     <Globe2 className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-pulse" size={20} />
-                  ) : (
-                     <Database className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
-                  )}
-                  <input
-                    type="text"
-                    value={segment}
-                    onChange={(e) => setSegment(e.target.value)}
-                    placeholder="Segmento (Deixe vazio p/ Varredura)"
-                    className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
-                    disabled={isLoading}
-                  />
-                  {isSweepMode && (
-                    <span className="hidden lg:inline absolute right-0 -top-8 text-[10px] uppercase font-bold text-emerald-500 border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded pointer-events-none shadow-sm shadow-emerald-500/10">
-                      Modo Varredura
-                    </span>
-                  )}
-               </div>
 
-               {/* Divider Desktop */}
-               <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
+              {/* Input: Segmento */}
+              <div className="relative group w-full">
+                {isSweepMode ? (
+                  <Globe2 className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-500 animate-pulse" size={20} />
+                ) : (
+                  <Database className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-500 transition-colors" size={20} />
+                )}
+                <input
+                  type="text"
+                  value={segment}
+                  onChange={(e) => setSegment(e.target.value)}
+                  placeholder="Segmento (Deixe vazio p/ Varredura)"
+                  className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
+                  disabled={isLoading}
+                />
+                {isSweepMode && (
+                  <span className="hidden lg:inline absolute right-0 -top-8 text-[10px] uppercase font-bold text-emerald-500 border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 rounded pointer-events-none shadow-sm shadow-emerald-500/10">
+                    Modo Varredura
+                  </span>
+                )}
+              </div>
 
-               {/* Input: Região */}
-               <div className="relative group w-full">
-                  <MapPin className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors z-10 ${searchCoords ? 'text-emerald-400' : 'text-slate-500 group-focus-within:text-brand-500'}`} size={20} />
-                  <AddressAutocomplete 
-                    value={region}
-                    onChange={handleRegionChange}
-                    onLocationSelect={handleLocationSelect}
-                    placeholder="Ex: Av. Paulista, SP ou Bairro Savassi"
-                    disabled={isLoading}
-                    className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
-                  />
-               </div>
+              {/* Divider Desktop */}
+              <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
 
-               {/* Divider Desktop */}
-               <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
+              {/* Input: Região */}
+              <div className="relative group w-full">
+                <MapPin className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors z-10 ${searchCoords ? 'text-emerald-400' : 'text-slate-500 group-focus-within:text-brand-500'}`} size={20} />
+                <AddressAutocomplete
+                  value={region}
+                  onChange={handleRegionChange}
+                  onLocationSelect={handleLocationSelect}
+                  placeholder="Ex: Av. Paulista, SP ou Bairro Savassi"
+                  disabled={isLoading}
+                  className="w-full bg-transparent border-none text-white placeholder-slate-500 focus:ring-0 h-12 pl-10 pr-4 text-base"
+                />
+              </div>
 
-               {/* Select: Quantidade */}
-               <div className="relative group w-full md:w-36 bg-slate-800/50 md:bg-transparent rounded-lg md:rounded-none border border-slate-700 md:border-none">
-                   <ListFilter className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
-                   <select 
-                      value={maxResults}
-                      onChange={(e) => setMaxResults(Number(e.target.value))}
-                      className="w-full bg-transparent border-none text-white focus:ring-0 h-12 pl-10 pr-8 appearance-none cursor-pointer text-base"
-                      disabled={isLoading}
-                   >
-                      <option value={20} className="bg-slate-900">20 leads</option>
-                      <option value={50} className="bg-slate-900">50 leads</option>
-                      <option value={80} className="bg-slate-900">80 leads</option>
-                      <option value={100} className="bg-slate-900">100 leads</option>
-                   </select>
-                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-                      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                   </div>
-               </div>
+              {/* Divider Desktop */}
+              <div className="hidden md:block h-8 bg-slate-700 w-px mx-2"></div>
 
-               {/* Button */}
-               <button
-                 type="submit"
-                 disabled={isLoading || !region}
-                 className={`ml-0 md:ml-2 mt-2 md:mt-0 px-6 h-12 rounded-xl font-bold transition-all flex items-center justify-center gap-2 w-full md:w-auto whitespace-nowrap shadow-lg ${
-                   isSweepMode 
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20' 
-                    : 'bg-brand-600 hover:bg-brand-500 text-white shadow-brand-500/20'
-                 } disabled:opacity-50 disabled:cursor-not-allowed`}
-               >
-                 {isLoading ? <Loader2 className="animate-spin" size={20} /> : (isSweepMode ? <Globe2 size={20} /> : <Search size={20} />)}
-                 {isLoading ? 'Buscando...' : (isSweepMode ? 'Escanear' : 'Buscar')}
-               </button>
+              {/* Select: Quantidade */}
+              <div className="relative group w-full md:w-36 bg-slate-800/50 md:bg-transparent rounded-lg md:rounded-none border border-slate-700 md:border-none">
+                <ListFilter className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
+                <select
+                  value={maxResults}
+                  onChange={(e) => setMaxResults(Number(e.target.value))}
+                  className="w-full bg-transparent border-none text-white focus:ring-0 h-12 pl-10 pr-8 appearance-none cursor-pointer text-base"
+                  disabled={isLoading}
+                >
+                  <option value={20} className="bg-slate-900">20 leads</option>
+                  <option value={50} className="bg-slate-900">50 leads</option>
+                  <option value={80} className="bg-slate-900">80 leads</option>
+                  <option value={100} className="bg-slate-900">100 leads</option>
+                </select>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                  <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </div>
+              </div>
+
+              {/* Button */}
+              <button
+                type="submit"
+                disabled={isLoading || !region}
+                className={`ml-0 md:ml-2 mt-2 md:mt-0 px-6 h-12 rounded-xl font-bold transition-all flex items-center justify-center gap-2 w-full md:w-auto whitespace-nowrap shadow-lg ${isSweepMode
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20'
+                  : 'bg-brand-600 hover:bg-brand-500 text-white shadow-brand-500/20'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {isLoading ? (
+                  <div className="flex items-center gap-2" onClick={(e) => { e.preventDefault(); handleStopSearch(); }}>
+                    <Loader2 className="animate-spin" size={20} />
+                    <span>Parar</span>
+                  </div>
+                ) : (
+                  <>
+                    {isSweepMode ? <Globe2 size={20} /> : <Search size={20} />}
+                    <span>{isSweepMode ? 'Escanear' : 'Buscar'}</span>
+                  </>
+                )}
+              </button>
             </div>
           </form>
 
           {/* Dicas de Busca (Só aparece se não houver resultados) */}
           {results.length === 0 && !isLoading && (
             <div className="mt-6 flex flex-col items-center animate-fadeIn">
-                <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4 max-w-2xl w-full text-left backdrop-blur-sm">
-                   <div className="flex items-center gap-2 text-brand-400 mb-2 font-semibold">
-                      <Lightbulb size={16} className={isSweepMode ? "text-emerald-400" : "text-brand-400"} />
-                      <span className={isSweepMode ? "text-emerald-400" : "text-brand-400"}>
-                         Dicas para {isSweepMode ? "Varredura" : "Busca"}
-                      </span>
-                   </div>
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs md:text-sm text-slate-400">
-                      <div className="space-y-2">
-                         <p className="flex items-start gap-2">
-                           <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
-                           {isSweepMode 
-                             ? <span><strong>Especifique a via:</strong> Selecione o endereço exato no menu para que a IA busque <strong>apenas</strong> naquele local (matchType: EXACT).</span>
-                             : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais".</span>
-                           }
-                         </p>
-                      </div>
-                      <div className="space-y-2 border-l border-slate-800 pl-4">
-                         <p className="flex items-start gap-2">
-                            <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
-                            <span>A IA prioriza empresas com <strong>rastros digitais recentes</strong>.</span>
-                         </p>
-                      </div>
-                   </div>
+              <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4 max-w-2xl w-full text-left backdrop-blur-sm">
+                <div className="flex items-center gap-2 text-brand-400 mb-2 font-semibold">
+                  <Lightbulb size={16} className={isSweepMode ? "text-emerald-400" : "text-brand-400"} />
+                  <span className={isSweepMode ? "text-emerald-400" : "text-brand-400"}>
+                    Dicas para {isSweepMode ? "Varredura" : "Busca"}
+                  </span>
                 </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs md:text-sm text-slate-400">
+                  <div className="space-y-2">
+                    <p className="flex items-start gap-2">
+                      <span className="bg-slate-800 p-0.5 rounded text-slate-300 font-bold shrink-0">1</span>
+                      {isSweepMode
+                        ? <span><strong>Especifique a via:</strong> Selecione o endereço exato no menu para que a IA busque <strong>apenas</strong> naquele local (matchType: EXACT).</span>
+                        : <span><strong>Seja específico:</strong> Ao invés de "Comércio", tente "Padarias Artesanais".</span>
+                      }
+                    </p>
+                  </div>
+                  <div className="space-y-2 border-l border-slate-800 pl-4">
+                    <p className="flex items-start gap-2">
+                      <Info size={14} className="mt-0.5 text-slate-500 shrink-0" />
+                      <span>A IA prioriza empresas com <strong>rastros digitais recentes</strong>.</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </section>
@@ -332,11 +361,11 @@ const App: React.FC = () => {
         {/* Error Display */}
         {error && (
           <div className="max-w-3xl mx-auto mb-8 p-4 bg-red-900/20 border border-red-500/50 rounded-lg text-red-200 flex items-start gap-3 animate-fadeIn">
-             <div className="mt-1"><AlertIcon /></div>
-             <div>
-               <h3 className="font-bold">A busca falhou</h3>
-               <p className="text-sm opacity-90">{error}</p>
-             </div>
+            <div className="mt-1"><AlertIcon /></div>
+            <div>
+              <h3 className="font-bold">A busca falhou</h3>
+              <p className="text-sm opacity-90">{error}</p>
+            </div>
           </div>
         )}
 
@@ -344,17 +373,17 @@ const App: React.FC = () => {
         {isLoading && (
           <div className="max-w-2xl mx-auto mb-8 animate-fadeIn">
             <div className="bg-slate-900 rounded-lg border border-slate-700 p-4 font-mono text-sm shadow-inner flex flex-col gap-2">
-               <div className="flex items-center justify-between text-brand-400">
-                 <div className="flex items-center gap-2">
-                    <Loader2 className="animate-spin" size={16} />
-                    <span>PROCESSANDO_DADOS...</span>
-                 </div>
-                 <span className="text-slate-500 text-xs">{results.length} resultados encontrados</span>
-               </div>
-               <p className="text-slate-300">{`> ${progressMsg}`}</p>
-               <div className="w-full bg-slate-800 rounded-full h-1 mt-1 overflow-hidden">
-                 <div className="bg-brand-500 h-1 rounded-full animate-progress"></div>
-               </div>
+              <div className="flex items-center justify-between text-brand-400">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="animate-spin" size={16} />
+                  <span>PROCESSANDO_DADOS...</span>
+                </div>
+                <span className="text-slate-500 text-xs">{results.length} resultados encontrados</span>
+              </div>
+              <p className="text-slate-300">{`> ${progressMsg}`}</p>
+              <div className="w-full bg-slate-800 rounded-full h-1 mt-1 overflow-hidden">
+                <div className="bg-brand-500 h-1 rounded-full animate-progress"></div>
+              </div>
             </div>
           </div>
         )}
@@ -362,17 +391,17 @@ const App: React.FC = () => {
         {/* Results Section */}
         {results.length > 0 && (
           <div className="animate-slideUp space-y-6 w-full">
-             
-             {/* Toggle View Components */}
-             {viewMode === 'table' ? (
-                <ResultsTable data={results} />
-             ) : (
-                <KanbanBoard data={results} onStageChange={handlePipelineChange} />
-             )}
 
-             {/* Map Component (Moved to bottom) */}
-             <ResultsMap data={results} />
-             
+            {/* Toggle View Components */}
+            {viewMode === 'table' ? (
+              <ResultsTable data={results} />
+            ) : (
+              <KanbanBoard data={results} onStageChange={handlePipelineChange} />
+            )}
+
+            {/* Map Component (Moved to bottom) */}
+            <ResultsMap data={results} />
+
           </div>
         )}
 
@@ -381,20 +410,19 @@ const App: React.FC = () => {
       {/* Footer */}
       <footer className="border-t border-slate-800 bg-slate-900 mt-auto py-4 text-center text-slate-500 text-xs flex justify-between px-8 items-center">
         <p>&copy; {new Date().getFullYear()} VeriCorp. Inteligência gerada por IA.</p>
-        
+
         <div className="flex items-center gap-4">
           {/* Botão de Limpar Cache */}
-          <button 
-             onClick={handleClearCache}
-             className={`flex items-center gap-1.5 transition-colors px-2 py-1 rounded border ${
-                cacheCleaned 
-                  ? 'text-emerald-500 border-emerald-500/30 bg-emerald-500/10' 
-                  : 'text-slate-500 border-slate-800 hover:text-slate-300 hover:bg-slate-800'
-             }`}
-             title="Limpar memória de busca"
+          <button
+            onClick={handleClearCache}
+            className={`flex items-center gap-1.5 transition-colors px-2 py-1 rounded border ${cacheCleaned
+              ? 'text-emerald-500 border-emerald-500/30 bg-emerald-500/10'
+              : 'text-slate-500 border-slate-800 hover:text-slate-300 hover:bg-slate-800'
+              }`}
+            title="Limpar memória de busca"
           >
-             {cacheCleaned ? <Check size={12} /> : <Trash2 size={12} />}
-             <span>{cacheCleaned ? 'Cache Limpo!' : 'Limpar Cache'}</span>
+            {cacheCleaned ? <Check size={12} /> : <Trash2 size={12} />}
+            <span>{cacheCleaned ? 'Cache Limpo!' : 'Limpar Cache'}</span>
           </button>
 
           <div className="flex items-center gap-2">

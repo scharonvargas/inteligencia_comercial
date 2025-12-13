@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+// GoogleGenAI import removed
 import { BusinessEntity, BusinessStatus } from "../types";
 import { dbService } from "./dbService";
 
@@ -25,7 +25,7 @@ const searchCache = new Map<string, CacheEntry>();
 const pruneCache = () => {
   const now = Date.now();
   let deletedCount = 0;
-  
+
   for (const [key, entry] of searchCache.entries()) {
     const isExpired = (now - entry.timestamp) > entry.ttl;
     if (isExpired) {
@@ -33,7 +33,7 @@ const pruneCache = () => {
       deletedCount++;
     }
   }
-  
+
   if (deletedCount > 0) {
     console.log(`🧹 Cache GC: ${deletedCount} entradas expiradas removidas.`);
   }
@@ -115,9 +115,9 @@ function restoreUrls(data: any, map: Map<string, string>): any {
   if (typeof data === 'string') {
     // Substitui todas as ocorrências de placeholders
     if (data.includes('__URL_PLACEHOLDER_')) {
-        return data.replace(/__URL_PLACEHOLDER_(\d+)__/g, (match) => {
-            return map.get(match) || match;
-        });
+      return data.replace(/__URL_PLACEHOLDER_(\d+)__/g, (match) => {
+        return map.get(match) || match;
+      });
     }
     return data;
   }
@@ -153,7 +153,7 @@ function cleanAndParseJSON(text: string): any[] {
 
   // 3. Remover citações de grounding (ex: [1], [2]) que quebram JSON
   // Cuidado para não remover arrays válidos. Removemos apenas se parecer citação isolada.
-  cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, ""); 
+  cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, "");
 
   // 4. Correção preliminar de URLs malformadas comuns em LLMs
   cleaned = cleaned.replace(/(https?|ftp)\s*:\s*\/\/\s*/yi, "$1://");
@@ -170,8 +170,8 @@ function cleanAndParseJSON(text: string): any[] {
     const trailing = url.match(/[),;\]}]+$/);
     let suffix = "";
     if (trailing) {
-        suffix = trailing[0];
-        url = url.slice(0, -trailing[0].length);
+      suffix = trailing[0];
+      url = url.slice(0, -trailing[0].length);
     }
     if (url.endsWith('.')) url = url.slice(0, -1);
 
@@ -204,19 +204,19 @@ function cleanAndParseJSON(text: string): any[] {
       const fixedJsonStr = jsonStr.replace(/'/g, '"');
       const parsed = JSON.parse(fixedJsonStr);
       const restored = restoreUrls(parsed, urlMap);
-      
+
       if (Array.isArray(restored)) {
         results.push(...restored);
       } else if (typeof restored === 'object' && restored !== null) {
         results.push(restored);
       }
     } catch (err) {
-       // Ignora fragmentos inválidos
+      // Ignora fragmentos inválidos
     }
   }
 
   if (results.length === 0 && text.length > 50) {
-     console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:", text.substring(0, 500) + "...");
+    console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:", text.substring(0, 500) + "...");
   }
 
   return results;
@@ -227,96 +227,62 @@ function cleanAndParseJSON(text: string): any[] {
  * NOTA: responseMimeType e responseSchema foram removidos para compatibilidade com a ferramenta googleSearch.
  */
 async function generateContentWithRetry(
-  modelId: string, 
-  prompt: string, 
+  modelId: string,
+  prompt: string,
   isBroadSearch: boolean,
-  maxRetries = 3
+  maxRetries = 3,
+  signal?: AbortSignal
 ): Promise<any> {
   let attempt = 0;
-  
-  // Configurações de Backoff
-  const BASE_DELAY = 2500; // 2.5s base
-  const MAX_DELAY = 20000; // 20s teto
+  const BASE_DELAY = 2500;
+  const MAX_DELAY = 20000;
 
   while (attempt < maxRetries) {
     try {
-      const apiKey = process.env.API_KEY;
-      
-      if (!apiKey) {
-        throw new Error("API_KEY_MISSING: A chave da API não foi detectada no ambiente.");
-      }
+      console.debug(`[Gemini Proxy] 🔄 Tentativa ${attempt + 1}/${maxRetries} iniciada...`);
 
-      const ai = new GoogleGenAI({ apiKey });
-      
-      console.debug(`[Gemini API] 🔄 Tentativa ${attempt + 1}/${maxRetries} iniciada...`);
-      
-      const response = await ai.models.generateContent({
-        model: modelId,
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          temperature: isBroadSearch ? 0.65 : 0.4,
-          // Safety Settings para evitar bloqueios em buscas comerciais
-          safetySettings: [
-             { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-             { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-             { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-             { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-          ]
-        },
+      const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          contents: prompt,
+          config: {
+            tools: [{ googleSearch: {} }],
+            temperature: isBroadSearch ? 0.65 : 0.4,
+            safetySettings: [
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+            ]
+          }
+        }),
+        signal
       });
-      
-      // Validação básica se há conteúdo
-      if (!response || (!response.text && !response.candidates?.[0]?.content)) {
-         throw new Error("RESPOSTA_VAZIA: A IA não retornou conteúdo de texto.");
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP Error ${response.status}`);
       }
 
-      return response;
+      const data = await response.json();
+      if (!data || (!data.text && !data.candidates?.[0]?.content)) {
+        throw new Error("RESPOSTA_VAZIA: A IA não retornou conteúdo de texto.");
+      }
+      return data;
 
     } catch (error: any) {
       attempt++;
-      
-      // Extração segura de detalhes do erro
-      const status = error.status || error.response?.status;
-      const statusText = error.statusText || error.response?.statusText || 'Erro Desconhecido';
+      if (signal?.aborted) throw error;
+
       const errorMessage = error.message || 'Sem mensagem de erro';
-      const errorBody = error.error || error.response?.data;
+      console.warn(`[Gemini Proxy] ❌ Erro na tentativa ${attempt}/${maxRetries}: ${errorMessage}`);
 
-      // Logs Detalhados
-      console.groupCollapsed(`[Gemini API] ❌ Erro na tentativa ${attempt}/${maxRetries}`);
-      console.warn(`Status: ${status} (${statusText})`);
-      console.warn(`Mensagem: ${errorMessage}`);
-      if (errorBody) console.warn('Corpo do Erro:', errorBody);
-      console.groupEnd();
-      
-      // Classificação de Erros Fatais (Não adianta retentar)
-      const isFatal = 
-          errorMessage.includes('API_KEY') || 
-          errorMessage === "API_KEY_MISSING" ||
-          status === 400 || // Bad Request
-          status === 401 || // Unauthorized
-          (status === 403 && !errorMessage.toLowerCase().includes('quota')); // Forbidden (exceto quota)
+      const isFatal = errorMessage.includes("400") || errorMessage.includes("401") || errorMessage.includes("403");
+      if (isFatal || attempt >= maxRetries) throw error;
 
-      if (isFatal) {
-        console.error(`[Gemini API] 🛑 Erro fatal detectado. Abortando retentativas.`);
-        throw error;
-      }
-
-      if (attempt >= maxRetries) {
-        console.error(`[Gemini API] 🛑 Limite de tentativas excedido (${maxRetries}).`);
-        throw error;
-      }
-
-      // Cálculo de Backoff Exponencial com "Full Jitter"
-      // Delay = min(MAX, (BASE * 2^(attempt-1)) + random_jitter)
-      const exponentialBackoff = BASE_DELAY * Math.pow(2, attempt - 1);
-      
-      // Jitter proporcional (até 50% do valor base atual) para distribuir a carga
-      const jitter = Math.random() * (exponentialBackoff * 0.5); 
-      
-      const delay = Math.min(exponentialBackoff + jitter, MAX_DELAY);
-      
-      console.log(`[Gemini API] ⏳ Aguardando ${Math.round(delay)}ms antes da próxima tentativa...`);
+      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt - 1) + (Math.random() * 1000), MAX_DELAY);
       await wait(delay);
     }
   }
@@ -328,7 +294,8 @@ export const fetchAndAnalyzeBusinesses = async (
   maxResults: number,
   onProgress: (msg: string) => void,
   onBatchResults: (results: BusinessEntity[]) => void,
-  coordinates?: { lat: number, lng: number } | null
+  coordinates?: { lat: number, lng: number } | null,
+  signal?: AbortSignal
 ): Promise<BusinessEntity[]> => {
   if (!process.env.API_KEY) {
     throw new Error("A chave da API está ausente. Selecione uma chave paga para continuar.");
@@ -337,14 +304,14 @@ export const fetchAndAnalyzeBusinesses = async (
   pruneCache();
 
   const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
-  
+
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
     // Verifica o TTL específico dessa entrada
     if (Date.now() - entry.timestamp < entry.ttl) {
       onProgress("⚡ Recuperando resultados do cache instantâneo...");
       const cachedData = entry.data;
-      await wait(300); 
+      await wait(300);
       onBatchResults(cachedData);
       return cachedData;
     } else {
@@ -367,28 +334,28 @@ export const fetchAndAnalyzeBusinesses = async (
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
   let attempts = 0;
-  const maxLoops = Math.ceil(maxResults / 10) + 5; 
+  const maxLoops = Math.ceil(maxResults / 10) + 5;
 
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
   onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}...`);
-  
+
   const modelId = "gemini-2.5-flash";
 
   while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
-    
+
     const isFirstBatch = allEntities.length === 0;
     const targetBatchSize = isFirstBatch ? INITIAL_BATCH_SIZE : SUBSEQUENT_BATCH_SIZE;
     const remaining = maxResults - allEntities.length;
     const currentBatchSize = Math.min(targetBatchSize, remaining);
-    
+
     const exclusionList = Array.from(seenNames).slice(-50).join(", ");
 
     if (isFirstBatch) {
-       onProgress("🚀 Início Rápido: Buscando primeiros resultados essenciais...");
+      onProgress("🚀 Início Rápido: Buscando primeiros resultados essenciais...");
     } else {
-       onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`);
+      onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`);
     }
 
     let promptTask = "";
@@ -484,10 +451,10 @@ export const fetchAndAnalyzeBusinesses = async (
       const response = await generateContentWithRetry(modelId, prompt, isBroadSearch);
 
       // Tratamento robusto para extrair texto da resposta
-      const rawText = response.text || 
-                      response.candidates?.[0]?.content?.parts?.[0]?.text || 
-                      "[]";
-      
+      const rawText = response.text ||
+        response.candidates?.[0]?.content?.parts?.[0]?.text ||
+        "[]";
+
       // Log de Debug para entender o que a IA está retornando
       if (attempts === 1) {
         console.debug("--- RAW AI RESPONSE (SAMPLE) ---");
@@ -495,7 +462,7 @@ export const fetchAndAnalyzeBusinesses = async (
       }
 
       let batchData: any[] = [];
-      
+
       // Usa a função de parse aprimorada para lidar com múltiplos objetos/formatos e URLs quebradas
       batchData = cleanAndParseJSON(rawText);
 
@@ -511,31 +478,31 @@ export const fetchAndAnalyzeBusinesses = async (
 
       for (const item of batchData) {
         const normalizedName = (item.name || "").toLowerCase().trim();
-        
+
         if (normalizedName && !seenNames.has(normalizedName)) {
-           seenNames.add(normalizedName);
-           newCount++;
-           
-           const address = item.address || "Endereço Desconhecido";
-           const name = item.name || "Nome Desconhecido";
-           const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
-           
-           const socialLinksRaw = Array.isArray(item.socialLinks) ? item.socialLinks : [];
-           const validSocialLinks = socialLinksRaw.filter((l: any) => typeof l === 'string' && l.trim().length > 0 && (l.startsWith('http') || l.startsWith('www')));
+          seenNames.add(normalizedName);
+          newCount++;
 
-           const whatsappLink = getWhatsAppUrl(item.phone, name);
-           if (whatsappLink) validSocialLinks.unshift(whatsappLink);
+          const address = item.address || "Endereço Desconhecido";
+          const name = item.name || "Nome Desconhecido";
+          const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
 
-           let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
-           if (item.matchType === 'NEARBY' || item.matchType === 'CITY_WIDE') {
-             finalMatchType = 'NEARBY';
-           } else {
-             finalMatchType = 'EXACT';
-           }
+          const socialLinksRaw = Array.isArray(item.socialLinks) ? item.socialLinks : [];
+          const validSocialLinks = socialLinksRaw.filter((l: any) => typeof l === 'string' && l.trim().length > 0 && (l.startsWith('http') || l.startsWith('www')));
 
-           const { text: evidenceText, days: evidenceDays } = refineActivityMetrics(item.lastActivityEvidence, item.daysSinceLastActivity);
+          const whatsappLink = getWhatsAppUrl(item.phone, name);
+          if (whatsappLink) validSocialLinks.unshift(whatsappLink);
 
-           const entity: BusinessEntity = {
+          let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
+          if (item.matchType === 'NEARBY' || item.matchType === 'CITY_WIDE') {
+            finalMatchType = 'NEARBY';
+          } else {
+            finalMatchType = 'EXACT';
+          }
+
+          const { text: evidenceText, days: evidenceDays } = refineActivityMetrics(item.lastActivityEvidence, item.daysSinceLastActivity);
+
+          const entity: BusinessEntity = {
             id: `biz-${Date.now()}-${allEntities.length + newCount}`,
             name: name,
             address: address,
@@ -553,33 +520,33 @@ export const fetchAndAnalyzeBusinesses = async (
             pipelineStage: 'new',
             matchType: finalMatchType
           };
-          
+
           batchEntities.push(entity);
         }
       }
 
       if (batchEntities.length > 0) {
         allEntities.push(...batchEntities);
-        onBatchResults(batchEntities); 
+        onBatchResults(batchEntities);
       }
 
       if (newCount === 0 && attempts > 2) {
-        break; 
+        break;
       }
-      
-      await wait(300); 
+
+      await wait(300);
 
     } catch (error: any) {
       console.warn(`Erro no lote ${attempts}:`, error);
-      if (allEntities.length > 0) break; 
+      if (allEntities.length > 0) break;
       if (allEntities.length === 0 && attempts === 1) {
-          throw new Error(error.message || "Falha na conexão com a IA.");
+        throw new Error(error.message || "Falha na conexão com a IA.");
       }
     }
   }
 
   onProgress(`Concluído! ${allEntities.length} resultados.`);
-  
+
   if (allEntities.length > 0) {
     // Determina o TTL baseado no tipo de busca
     let currentTTL = TTL_CONFIG.DEFAULT;
@@ -595,13 +562,12 @@ export const fetchAndAnalyzeBusinesses = async (
       data: allEntities
     });
   }
-  
+
   return allEntities;
 };
 
 export const generateOutreachEmail = async (business: BusinessEntity): Promise<string> => {
-  if (!process.env.API_KEY) throw new Error("Chave API não configurada.");
-
+  // Configurado via proxy agora
   const prompt = `
     Escreva um "Cold Email" B2B para: ${business.name} (${business.category}).
     Evidência: ${business.lastActivityEvidence}.
@@ -610,12 +576,17 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
   `;
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
+    const response = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: "gemini-2.5-flash",
+        contents: prompt
+      })
     });
-    return response.text || "Erro ao gerar texto.";
+    if (!response.ok) return "Erro backend.";
+    const data = await response.json();
+    return data.text || "Erro processamento.";
   } catch (error) {
     return "Erro de conexão.";
   }
