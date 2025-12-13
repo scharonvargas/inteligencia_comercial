@@ -33,7 +33,12 @@ const getLocalProspects = (): BusinessEntity[] => {
 };
 
 const saveLocalProspects = (prospects: BusinessEntity[]) => {
-  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(prospects));
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(prospects));
+  } catch (e) {
+    console.error("Erro ao salvar no LocalStorage (Quota exceeded?):", e);
+    // Em um app real, notificaríamos o usuário ou limparíamos dados antigos
+  }
 };
 
 export const dbService = {
@@ -131,56 +136,130 @@ export const dbService = {
   /**
    * Atualiza o estágio do pipeline de um lead
    */
-  /**
-   * Atualiza o estágio do pipeline de um lead
-   */
   updatePipelineStage: async (businessId: string, newStage: 'new' | 'contacted' | 'meeting' | 'closed' | 'lost'): Promise<void> => {
-    // 1. Atualizar Local Storage (Supabase fallback logic kept simple for now)
-    const prospects = await dbService.getAllProspects();
-    const prospect = prospects.find(p => p.id === businessId);
+    if (!supabase) {
+      // Fallback Local
+      const prospects = await dbService.getAllProspects();
+      const prospect = prospects.find(p => p.id === businessId);
+      if (prospect) {
+        const oldStage = prospect.pipelineStage;
+        prospect.pipelineStage = newStage;
+        const historyEvent: any = {
+          id: crypto.randomUUID(),
+          type: 'stage_change',
+          description: `Mudou de ${oldStage || 'Novo'} para ${newStage}`,
+          createdAt: new Date().toISOString(),
+          metadata: { oldStage, newStage }
+        };
+        prospect.history = [...(prospect.history || []), historyEvent];
+        saveLocalProspects(prospects);
+      }
+      return;
+    }
 
-    if (prospect) {
-      const oldStage = prospect.pipelineStage;
-      prospect.pipelineStage = newStage;
+    try {
+      // 1. Fetch current history
+      const { data: current } = await supabase
+        .from('prospects')
+        .select('history, pipeline_stage')
+        .eq('business_id', businessId) // Using business_id as key
+        .single();
 
-      // Log history event
-      const historyEvent: any = {
+      if (!current) throw new Error("Prospect not found in Supabase");
+
+      const oldStage = current.pipeline_stage;
+      const historyEvent = {
         id: crypto.randomUUID(),
         type: 'stage_change',
-        description: `Mudou de ${oldStage || 'Novo'} para ${newStage}`,
+        description: `Mudou de ${oldStage || 'new'} para ${newStage}`,
         createdAt: new Date().toISOString(),
         metadata: { oldStage, newStage }
       };
 
-      prospect.history = [...(prospect.history || []), historyEvent];
+      // 2. Append to history and Update Stage
+      const currentHistory = current.history && Array.isArray(current.history) ? current.history : [];
+      const updatedHistory = [...currentHistory, historyEvent];
 
-      await saveLocalProspects(prospects);
+      const { error } = await supabase
+        .from('prospects')
+        .update({
+          pipeline_stage: newStage,
+          history: updatedHistory
+        })
+        .eq('business_id', businessId);
+
+      if (error) throw error;
+
+    } catch (e: any) {
+      console.error("Erro ao atualizar pipeline no Supabase:", e);
+      // Opcional: Fallback
     }
   },
 
   async addNote(businessId: string, content: string, type: 'call' | 'email' | 'note' | 'meeting' = 'note'): Promise<void> {
-    const prospects = await dbService.getAllProspects();
-    const prospect = prospects.find(p => p.id === businessId);
+    if (!supabase) {
+      // Fallback Local
+      const prospects = await dbService.getAllProspects();
+      const prospect = prospects.find(p => p.id === businessId);
+      if (prospect) {
+        const newNote: any = {
+          id: crypto.randomUUID(),
+          content,
+          type,
+          createdAt: new Date().toISOString()
+        };
+        const historyEvent: any = {
+          id: crypto.randomUUID(),
+          type: 'note_added',
+          description: `Nota adicionada: ${content.substring(0, 30)}${content.length > 30 ? '...' : ''}`,
+          createdAt: new Date().toISOString()
+        };
+        prospect.notes = [...(prospect.notes || []), newNote];
+        prospect.history = [...(prospect.history || []), historyEvent];
+        saveLocalProspects(prospects);
+      }
+      return;
+    }
 
-    if (prospect) {
-      const newNote: any = {
+    try {
+      // 1. Fetch current notes/history
+      const { data: current } = await supabase
+        .from('prospects')
+        .select('notes, history')
+        .eq('business_id', businessId)
+        .single();
+
+      if (!current) throw new Error("Prospect not found");
+
+      const newNote = {
         id: crypto.randomUUID(),
         content,
         type,
         createdAt: new Date().toISOString()
       };
 
-      const historyEvent: any = {
+      const historyEvent = {
         id: crypto.randomUUID(),
         type: 'note_added',
-        description: `Nota adicionada: ${content.substring(0, 30)}${content.length > 30 ? '...' : ''}`,
+        description: `Nota adicionada: ${content.substring(0, 30)}...`,
         createdAt: new Date().toISOString()
       };
 
-      prospect.notes = [...(prospect.notes || []), newNote];
-      prospect.history = [...(prospect.history || []), historyEvent];
+      const currentNotes = current.notes && Array.isArray(current.notes) ? current.notes : [];
+      const currentHistory = current.history && Array.isArray(current.history) ? current.history : [];
 
-      await saveLocalProspects(prospects);
+      const { error } = await supabase
+        .from('prospects')
+        .update({
+          notes: [...currentNotes, newNote],
+          history: [...currentHistory, historyEvent]
+        })
+        .eq('business_id', businessId);
+
+      if (error) throw error;
+
+    } catch (e: any) {
+      console.error("Erro ao adicionar nota no Supabase:", e);
     }
   },
 
@@ -215,7 +294,10 @@ export const dbService = {
         lat: row.lat,
         lng: row.lng,
         isProspect: true,
-        pipelineStage: row.pipeline_stage || 'new'
+        pipelineStage: row.pipeline_stage || 'new',
+        // Mapping JSONB to Types
+        notes: row.notes || [],
+        history: row.history || []
       }));
     } catch (error: any) {
       // Improved error logging
@@ -246,4 +328,3 @@ function toggleLocal(business: BusinessEntity): boolean {
     return true;
   }
 }
-

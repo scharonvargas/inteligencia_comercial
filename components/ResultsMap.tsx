@@ -25,12 +25,19 @@ const MapController = ({ data }: { data: BusinessEntity[] }) => {
   const map = useMap();
 
   useEffect(() => {
+    // Force map update to fix missing tiles (grey box issue)
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+    }, 100);
+
     if (data.length === 0) return;
 
     const bounds = L.latLngBounds(data.map(d => [d.lat!, d.lng!]));
     if (bounds.isValid()) {
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
     }
+
+    return () => clearTimeout(timer);
   }, [data, map]);
 
   return null;

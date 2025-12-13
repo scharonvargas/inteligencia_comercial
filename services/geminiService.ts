@@ -1,4 +1,3 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import { BusinessEntity, BusinessStatus } from "../types";
 import { dbService } from "./dbService";
 
@@ -224,7 +223,7 @@ function cleanAndParseJSON(text: string): any[] {
 
 /**
  * Função Wrapper com Retry, Backoff Exponencial Aprimorado e Logs Detalhados.
- * NOTA: responseMimeType e responseSchema foram removidos para compatibilidade com a ferramenta googleSearch.
+ * AGORA SEGURA: Usa o proxy /api/gemini para não expor a API Key no cliente.
  */
 async function generateContentWithRetry(
   modelId: string,
@@ -234,90 +233,72 @@ async function generateContentWithRetry(
   signal?: AbortSignal
 ): Promise<any> {
   let attempt = 0;
-
-  // Configurações de Backoff
-  const BASE_DELAY = 2500; // 2.5s base
-  const MAX_DELAY = 20000; // 20s teto
+  const BASE_DELAY = 2500;
+  const MAX_DELAY = 20000;
 
   while (attempt < maxRetries) {
     try {
-      const apiKey = process.env.API_KEY;
+      if (signal?.aborted) throw new Error("Busca cancelada pelo usuário.");
 
-      if (!apiKey) {
-        throw new Error("API_KEY_MISSING: A chave da API não foi detectada no ambiente.");
-      }
+      console.debug(`[Gemini Proxy] 🔄 Tentativa ${attempt + 1}/${maxRetries} iniciada...`);
 
-      const ai = new GoogleGenAI({ apiKey });
-
-      console.debug(`[Gemini API] 🔄 Tentativa ${attempt + 1}/${maxRetries} iniciada...`);
-
-      const response = await ai.models.generateContent({
-        model: modelId,
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          temperature: isBroadSearch ? 0.65 : 0.4,
-          // Safety Settings para evitar bloqueios em buscas comerciais
-          safetySettings: [
-            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-          ] as any
-        },
+      const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          contents: prompt,
+          config: {
+            tools: [{ googleSearch: {} }],
+            temperature: isBroadSearch ? 0.65 : 0.4,
+            safetySettings: [
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+            ]
+          }
+        }),
+        signal
       });
 
-      // Validação básica se há conteúdo
-      if (!response || (!response.text && !response.candidates?.[0]?.content)) {
-        throw new Error("RESPOSTA_VAZIA: A IA não retornou conteúdo de texto.");
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw {
+          status: response.status,
+          statusText: response.statusText,
+          message: errorBody.error || errorBody.details || "Erro na requisição ao Proxy",
+          error: errorBody
+        };
       }
 
-      return response;
+      const data = await response.json();
+
+      // Validação básica se há conteúdo
+      if (!data || (!data.candidates?.[0]?.content)) {
+        throw new Error("RESPOSTA_VAZIA: A IA não retornou conteúdo de texto válido via Proxy.");
+      }
+
+      return data;
 
     } catch (error: any) {
+      if (signal?.aborted || error.name === 'AbortError') throw new Error("Busca cancelada pelo usuário.");
+
       attempt++;
+      const status = error.status || 500;
+      const errorMessage = error.message || 'Erro Desconhecido';
 
-      // Extração segura de detalhes do erro
-      const status = error.status || error.response?.status;
-      const statusText = error.statusText || error.response?.statusText || 'Erro Desconhecido';
-      const errorMessage = error.message || 'Sem mensagem de erro';
-      const errorBody = error.error || error.response?.data;
-
-      // Logs Detalhados
-      console.groupCollapsed(`[Gemini API] ❌ Erro na tentativa ${attempt}/${maxRetries}`);
-      console.warn(`Status: ${status} (${statusText})`);
+      console.groupCollapsed(`[Gemini Proxy] ❌ Erro na tentativa ${attempt}/${maxRetries}`);
+      console.warn(`Status: ${status}`);
       console.warn(`Mensagem: ${errorMessage}`);
-      if (errorBody) console.warn('Corpo do Erro:', errorBody);
       console.groupEnd();
 
-      // Classificação de Erros Fatais (Não adianta retentar)
-      const isFatal =
-        errorMessage.includes('API_KEY') ||
-        errorMessage === "API_KEY_MISSING" ||
-        status === 400 || // Bad Request
-        status === 401 || // Unauthorized
-        (status === 403 && !errorMessage.toLowerCase().includes('quota')); // Forbidden (exceto quota)
+      const isFatal = errorMessage.includes('API_KEY') || status === 400 || status === 401;
 
-      if (isFatal) {
-        console.error(`[Gemini API] 🛑 Erro fatal detectado. Abortando retentativas.`);
-        throw error;
-      }
+      if (isFatal) throw error;
+      if (attempt >= maxRetries) throw error;
 
-      if (attempt >= maxRetries) {
-        console.error(`[Gemini API] 🛑 Limite de tentativas excedido (${maxRetries}).`);
-        throw error;
-      }
-
-      // Cálculo de Backoff Exponencial com "Full Jitter"
-      // Delay = min(MAX, (BASE * 2^(attempt-1)) + random_jitter)
-      const exponentialBackoff = BASE_DELAY * Math.pow(2, attempt - 1);
-
-      // Jitter proporcional (até 50% do valor base atual) para distribuir a carga
-      const jitter = Math.random() * (exponentialBackoff * 0.5);
-
-      const delay = Math.min(exponentialBackoff + jitter, MAX_DELAY);
-
-      console.log(`[Gemini API] ⏳ Aguardando ${Math.round(delay)}ms antes da próxima tentativa...`);
+      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt - 1), MAX_DELAY);
       await wait(delay);
     }
   }
@@ -332,19 +313,12 @@ export const fetchAndAnalyzeBusinesses = async (
   coordinates?: { lat: number, lng: number } | null,
   signal?: AbortSignal
 ): Promise<BusinessEntity[]> => {
-  /*
-  if (!process.env.API_KEY) {
-    throw new Error("A chave da API está ausente. Selecione uma chave paga para continuar.");
-  }
-  */
-
   pruneCache();
 
   const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
 
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
-    // Verifica o TTL específico dessa entrada
     if (Date.now() - entry.timestamp < entry.ttl) {
       onProgress("⚡ Recuperando resultados do cache instantâneo...");
       const cachedData = entry.data;
@@ -508,8 +482,8 @@ export const fetchAndAnalyzeBusinesses = async (
       if (signal?.aborted) break;
       const response = await generateContentWithRetry(modelId, prompt, isBroadSearch, 3, signal);
 
-      // Tratamento robusto para extrair texto da resposta
-      const rawText = response.text ||
+      // Tratamento robusto para extrair texto da resposta via Proxy
+      const rawText =
         response.candidates?.[0]?.content?.parts?.[0]?.text ||
         "[]";
 
@@ -627,8 +601,7 @@ export const fetchAndAnalyzeBusinesses = async (
 };
 
 export const generateOutreachEmail = async (business: BusinessEntity): Promise<string> => {
-  if (!process.env.API_KEY) throw new Error("Chave API não configurada.");
-
+  // Chamada via proxy para proteger chave
   const prompt = `
     Escreva um "Cold Email" B2B para: ${business.name} (${business.category}).
     Evidência: ${business.lastActivityEvidence}.
@@ -653,8 +626,6 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
 };
 
 export const analyzeCompetitors = async (business: BusinessEntity): Promise<any> => {
-  if (!process.env.API_KEY) throw new Error("Chave API não configurada.");
-
   const prompt = `
      Atue como um Especialista de Mercado Local.
      Analise 3 concorrentes diretos (reais ou prováveis) para: ${business.name} (${business.category}) em ${business.address}.
@@ -698,8 +669,6 @@ export const analyzeCompetitors = async (business: BusinessEntity): Promise<any>
 };
 
 export const generateOmnichannelScripts = async (business: BusinessEntity): Promise<any> => {
-  if (!process.env.API_KEY) throw new Error("Chave API não configurada.");
-
   const prompt = `
     Crie um "Kit de Outreach Omnichannel" B2B para: ${business.name} (${business.category}).
     Evidência: ${business.lastActivityEvidence}.
