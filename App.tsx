@@ -5,10 +5,11 @@ import { ResultsTable } from './components/ResultsTable';
 import { ResultsMap } from './components/ResultsMap';
 import { KanbanBoard } from './components/KanbanBoard';
 import { AddressAutocomplete } from './components/AddressAutocomplete';
+import { SettingsModal } from './components/SettingsModal';
 import { dbService } from './services/dbService';
 import {
   Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info,
-  LayoutList, KanbanSquare, Trash2, Check
+  LayoutList, KanbanSquare, Trash2, Check, Settings
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -45,6 +46,9 @@ const App: React.FC = () => {
 
   // Ref para controle de cancelamento de busca
   const abortControllerRef = React.useRef<AbortController | null>(null);
+
+  // Estado para Modal de Configurações
+  const [showSettings, setShowSettings] = useState(false);
 
   const handleStopSearch = useCallback(() => {
     if (abortControllerRef.current) {
@@ -212,6 +216,13 @@ const App: React.FC = () => {
             <div className="text-xs text-slate-500 hidden md:block">
               Gemini 2.5 Flash
             </div>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="text-slate-400 hover:text-white transition-colors p-2 hover:bg-slate-800 rounded-lg"
+              title="Configurações"
+            >
+              <Settings size={20} />
+            </button>
           </div>
         </div>
       </header>
@@ -434,6 +445,8 @@ const App: React.FC = () => {
           </div>
         </div>
       </footer>
+
+      <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 };
