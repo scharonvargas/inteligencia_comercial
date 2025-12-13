@@ -225,7 +225,55 @@ function cleanAndParseJSON(text: string): any[] {
 /**
  * Função Wrapper com Retry, Backoff Exponencial Aprimorado e Logs Detalhados.
  * NOTA: responseMimeType e responseSchema foram removidos para compatibilidade com a ferramenta googleSearch.
+ * 
+ * Em desenvolvimento local, usa fallback direto para a API Gemini se o proxy não estiver disponível.
  */
+
+// Detect if we're in development mode
+const isDev = import.meta.env?.DEV || window.location.hostname === 'localhost';
+
+async function callGeminiDirect(
+  modelId: string,
+  prompt: string,
+  isBroadSearch: boolean,
+  signal?: AbortSignal
+): Promise<any> {
+  // Tenta usar API key do localStorage ou variável de ambiente
+  const apiKey = localStorage.getItem('vericorp_dev_api_key') || import.meta.env?.VITE_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('Para desenvolvimento local, configure sua API key: localStorage.setItem("vericorp_dev_api_key", "SUA_CHAVE")');
+  }
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+
+  const response = await fetch(geminiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: isBroadSearch ? 0.65 : 0.4 },
+      tools: [{ googleSearch: {} }],
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ]
+    }),
+    signal
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Gemini API Error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return { text, candidates: data.candidates };
+}
+
 async function generateContentWithRetry(
   modelId: string,
   prompt: string,
@@ -239,8 +287,9 @@ async function generateContentWithRetry(
 
   while (attempt < maxRetries) {
     try {
-      console.debug(`[Gemini Proxy] 🔄 Tentativa ${attempt + 1}/${maxRetries} iniciada...`);
+      console.debug(`[Gemini] 🔄 Tentativa ${attempt + 1}/${maxRetries}...`);
 
+      // Try proxy first
       const response = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -261,6 +310,12 @@ async function generateContentWithRetry(
         signal
       });
 
+      // If 404 or 405 in dev mode, try direct API
+      if (!response.ok && (response.status === 404 || response.status === 405) && isDev) {
+        console.warn('[Gemini] Proxy não disponível em dev, tentando API direta...');
+        return await callGeminiDirect(modelId, prompt, isBroadSearch, signal);
+      }
+
       if (!response.ok) {
         const errJson = await response.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP Error ${response.status}`);
@@ -273,11 +328,21 @@ async function generateContentWithRetry(
       return data;
 
     } catch (error: any) {
+      // If it's a network error in dev, try direct API
+      if (isDev && (error.message?.includes('Failed to fetch') || error.message?.includes('405'))) {
+        console.warn('[Gemini] Erro de rede em dev, tentando API direta...');
+        try {
+          return await callGeminiDirect(modelId, prompt, isBroadSearch, signal);
+        } catch (directError: any) {
+          throw directError;
+        }
+      }
+
       attempt++;
       if (signal?.aborted) throw error;
 
       const errorMessage = error.message || 'Sem mensagem de erro';
-      console.warn(`[Gemini Proxy] ❌ Erro na tentativa ${attempt}/${maxRetries}: ${errorMessage}`);
+      console.warn(`[Gemini] ❌ Erro na tentativa ${attempt}/${maxRetries}: ${errorMessage}`);
 
       const isFatal = errorMessage.includes("400") || errorMessage.includes("401") || errorMessage.includes("403");
       if (isFatal || attempt >= maxRetries) throw error;

@@ -2,21 +2,21 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import * as ReactWindow from 'react-window';
 import { BusinessEntity, BusinessStatus } from '../types';
 import { generateOutreachEmail } from '../services/geminiService';
-import { dbService } from '../services/dbService';
+import { dbService, leadScoreService } from '../services/dbService';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
-import { 
-  ExternalLink, Phone, Globe, AlertTriangle, CheckCircle, Download, 
+import {
+  ExternalLink, Phone, Globe, AlertTriangle, CheckCircle, Download,
   Activity, ChevronDown, ChevronUp, Calendar, Instagram, Facebook, Linkedin,
-  Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X, Filter
+  Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X, Filter, Share2
 } from 'lucide-react';
 
 // Workaround for react-window import in ESM/CDN environments
 // Tries multiple export locations for VariableSizeList
-const List = ReactWindow.VariableSizeList || 
-             (ReactWindow as any).default?.VariableSizeList || 
-             (ReactWindow as any).default || 
-             (window as any).ReactWindow?.VariableSizeList;
+const List = ReactWindow.VariableSizeList ||
+  (ReactWindow as any).default?.VariableSizeList ||
+  (ReactWindow as any).default ||
+  (window as any).ReactWindow?.VariableSizeList;
 
 // --- Leaflet Icon Fix ---
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -75,14 +75,14 @@ const createWhatsAppUrl = (phone: string | null, name: string) => {
   let clean = phone.replace(/\D/g, '');
   // Remove leading zeros
   clean = clean.replace(/^0+/, '');
-  
+
   if (clean.length === 0) return '#';
-  
+
   // Heurística simples para Brasil: se tiver 10 ou 11 dígitos, assume que falta o 55
   if (clean.length >= 10 && clean.length <= 11) {
     clean = '55' + clean;
   }
-  
+
   const text = encodeURIComponent(`Olá, encontrei a ${name} e gostaria de saber mais sobre seus serviços.`);
   return `https://wa.me/${clean}?text=${text}`;
 };
@@ -130,11 +130,11 @@ const LocationModal = ({ biz, onClose }: { biz: BusinessEntity, onClose: () => v
           </button>
         </div>
         <div className="h-64 w-full relative z-0">
-           <MapContainer 
-            center={[biz.lat, biz.lng]} 
-            zoom={16} 
+          <MapContainer
+            center={[biz.lat, biz.lng]}
+            zoom={16}
             style={{ height: '100%', width: '100%' }}
-           >
+          >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -142,19 +142,19 @@ const LocationModal = ({ biz, onClose }: { biz: BusinessEntity, onClose: () => v
             <Marker position={[biz.lat, biz.lng]}>
               <Popup>
                 <div className="text-slate-800 font-sans text-sm">
-                  <strong>{biz.name}</strong><br/>
+                  <strong>{biz.name}</strong><br />
                   {biz.address}
                 </div>
               </Popup>
             </Marker>
-           </MapContainer>
+          </MapContainer>
         </div>
         <div className="p-4 bg-slate-800 text-sm">
           <p className="text-slate-300 mb-2 flex items-start gap-2">
             <MapPin size={16} className="shrink-0 mt-0.5 text-slate-500" />
             {biz.address}
           </p>
-          <a 
+          <a
             href={`https://www.google.com/maps/search/?api=1&query=${biz.lat},${biz.lng}`}
             target="_blank"
             rel="noopener noreferrer"
@@ -200,9 +200,9 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
     <div style={style} className="px-2">
       {/* Card Wrapper for Row */}
       <div className={`transition-all duration-300 border-b border-slate-700/50 ${isExpanded ? 'bg-slate-700/20' : 'hover:bg-slate-700/10'}`}>
-        
+
         {/* Main Grid Row */}
-        <div 
+        <div
           onClick={() => toggleRow(biz.id)}
           className="grid items-center gap-4 py-4 px-2 cursor-pointer"
           style={{ gridTemplateColumns: GRID_TEMPLATE }}
@@ -214,13 +214,13 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
 
           {/* 2. Star */}
           <div className="flex justify-center">
-            <button 
+            <button
               onClick={(e) => onToggleProspect(e, biz)}
               className="hover:scale-110 transition-transform p-1 rounded-full hover:bg-slate-600 focus:outline-none"
             >
-              <Star 
-                size={18} 
-                className={biz.isProspect ? "fill-amber-400 text-amber-400" : "text-slate-600 hover:text-slate-500"} 
+              <Star
+                size={18}
+                className={biz.isProspect ? "fill-amber-400 text-amber-400" : "text-slate-600 hover:text-slate-500"}
               />
             </button>
           </div>
@@ -228,12 +228,25 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
           {/* 3. Company Info */}
           <div className="overflow-hidden">
             <div className="flex items-center gap-2">
-               <div className="font-bold text-slate-200 truncate" title={biz.name}>{biz.name}</div>
-               {biz.matchType === 'NEARBY' && (
-                  <span className="shrink-0 text-[10px] uppercase font-bold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1" title="Região Próxima">
-                    <AlertTriangle size={8} /> <span className="hidden sm:inline">Próximo</span>
+              {/* Lead Score Badge */}
+              {(() => {
+                const scoreData = leadScoreService.calculateScore(biz);
+                const label = leadScoreService.getScoreLabel(scoreData.score);
+                return (
+                  <span
+                    className={`text-xs ${label.color} shrink-0`}
+                    title={`Score: ${scoreData.score}/100`}
+                  >
+                    {label.emoji}
                   </span>
-               )}
+                );
+              })()}
+              <div className="font-bold text-slate-200 truncate" title={biz.name}>{biz.name}</div>
+              {biz.matchType === 'NEARBY' && (
+                <span className="shrink-0 text-[10px] uppercase font-bold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1" title="Região Próxima">
+                  <AlertTriangle size={8} /> <span className="hidden sm:inline">Próximo</span>
+                </span>
+              )}
             </div>
             <div className="text-xs text-slate-500 truncate mt-0.5">{biz.category}</div>
           </div>
@@ -253,11 +266,11 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
               <div className="flex items-center gap-2 group/phone">
                 <Phone size={12} className="text-slate-500 shrink-0" />
                 <span className="truncate">{biz.phone}</span>
-                <a 
+                <a
                   href={waUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e: React.MouseEvent) => e.stopPropagation()}
                   className="opacity-0 group-hover/phone:opacity-100 transition-opacity text-emerald-400 hover:text-emerald-300 bg-emerald-900/30 p-1 rounded-full"
                   title="Abrir WhatsApp"
                 >
@@ -271,9 +284,9 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
           <div className="flex items-center gap-2 overflow-hidden">
             <Activity size={14} className={biz.daysSinceLastActivity <= 30 && biz.daysSinceLastActivity !== -1 ? "text-emerald-400 shrink-0" : "text-slate-500 shrink-0"} />
             <span className="text-xs text-slate-300 truncate">
-              {biz.daysSinceLastActivity === 0 
-                ? 'Hoje' 
-                : biz.daysSinceLastActivity > 0 
+              {biz.daysSinceLastActivity === 0
+                ? 'Hoje'
+                : biz.daysSinceLastActivity > 0
                   ? `${biz.daysSinceLastActivity} dias atrás`
                   : 'Desconhecido'}
             </span>
@@ -292,154 +305,154 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
         {isExpanded && (
           <div className="px-14 pb-6 pt-2 cursor-default animate-fadeIn">
             <div className="p-6 border-l-2 border-brand-500 bg-slate-800/50 rounded-r-lg grid grid-cols-1 lg:grid-cols-3 gap-6">
-                
-                {/* Col 1: Activity & Location */}
-                <div className="space-y-4">
-                  <div>
-                    <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide mb-2 flex items-center gap-2">
-                      <Activity size={14} /> Detalhes de Atividade
-                    </h4>
-                    <div className="text-sm text-slate-300 bg-slate-900/50 p-3 rounded border border-slate-700/50 leading-relaxed">
-                      "{biz.lastActivityEvidence || "Nenhuma evidência textual encontrada."}"
-                    </div>
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide mb-2 flex items-center gap-2">
-                      <MapPin size={14} /> Localização
-                    </h4>
-                    <p className="text-sm text-slate-300 mb-2">{biz.address}</p>
-                    {biz.lat && biz.lng && (
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); onViewMap(biz); }}
-                          className="flex items-center gap-1.5 text-xs font-medium text-brand-400 hover:text-brand-300 hover:underline bg-brand-900/20 px-2 py-1 rounded border border-brand-500/20"
-                        >
-                          <MapPin size={12} />
-                          Ver no Mapa
-                        </button>
-                    )}
-                     {biz.matchType === 'NEARBY' && (
-                        <p className="text-amber-500 mt-2 text-xs italic flex items-center gap-1 bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
-                           <AlertTriangle size={10} /> 
-                           Localizado em região próxima (Fora do alvo exato)
-                        </p>
-                    )}
+
+              {/* Col 1: Activity & Location */}
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide mb-2 flex items-center gap-2">
+                    <Activity size={14} /> Detalhes de Atividade
+                  </h4>
+                  <div className="text-sm text-slate-300 bg-slate-900/50 p-3 rounded border border-slate-700/50 leading-relaxed">
+                    "{biz.lastActivityEvidence || "Nenhuma evidência textual encontrada."}"
                   </div>
                 </div>
-
-                {/* Col 2: Digital Presence */}
-                <div className="space-y-4">
-                   <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide flex items-center gap-2">
-                      <Globe size={14} /> Presença Digital
-                   </h4>
-                   <div className="space-y-2">
-                      
-                      {/* Botão de WhatsApp de Destaque */}
-                      {biz.phone && (
-                         <a 
-                           href={waUrl}
-                           target="_blank"
-                           rel="noopener noreferrer"
-                           className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white p-2.5 rounded font-bold text-xs transition-colors shadow-lg shadow-emerald-500/20 mb-3"
-                         >
-                           <MessageCircle size={16} />
-                           Iniciar Conversa no WhatsApp
-                         </a>
-                      )}
-
-                      {biz.website ? (
-                         <div className="flex items-center justify-between bg-slate-900 p-2 rounded border border-slate-700">
-                             <div className="flex items-center gap-2 truncate">
-                                <Globe size={14} className="text-slate-500"/>
-                                <span className="text-xs text-brand-400 truncate max-w-[150px]">{getHostname(biz.website)}</span>
-                             </div>
-                             <a 
-                                href={biz.website} 
-                                target="_blank" 
-                                rel="noopener noreferrer" 
-                                className="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white flex items-center gap-1 transition-colors"
-                             >
-                                Acessar <ExternalLink size={10} />
-                             </a>
-                         </div>
-                      ) : (
-                         <div className="bg-slate-900/30 p-2 rounded border border-slate-800 border-dashed text-center text-xs text-slate-600">
-                            Website não identificado
-                         </div>
-                      )}
-
-                      {biz.socialLinks.length > 0 ? (
-                        <div className="grid grid-cols-1 gap-2">
-                          {biz.socialLinks.map((link, idx) => (
-                            <a 
-                              key={idx} 
-                              href={link} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-2 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded transition-colors border border-slate-700"
-                            >
-                              {getSocialIcon(link)}
-                              <span className="truncate flex-1">{getHostname(link)}</span>
-                              <ExternalLink size={12} className="opacity-50" />
-                            </a>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-slate-500 italic">Nenhuma rede social identificada.</p>
-                      )}
-                   </div>
+                <div>
+                  <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide mb-2 flex items-center gap-2">
+                    <MapPin size={14} /> Localização
+                  </h4>
+                  <p className="text-sm text-slate-300 mb-2">{biz.address}</p>
+                  {biz.lat && biz.lng && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onViewMap(biz); }}
+                      className="flex items-center gap-1.5 text-xs font-medium text-brand-400 hover:text-brand-300 hover:underline bg-brand-900/20 px-2 py-1 rounded border border-brand-500/20"
+                    >
+                      <MapPin size={12} />
+                      Ver no Mapa
+                    </button>
+                  )}
+                  {biz.matchType === 'NEARBY' && (
+                    <p className="text-amber-500 mt-2 text-xs italic flex items-center gap-1 bg-amber-500/10 p-1.5 rounded border border-amber-500/20">
+                      <AlertTriangle size={10} />
+                      Localizado em região próxima (Fora do alvo exato)
+                    </p>
+                  )}
                 </div>
+              </div>
 
-                {/* Col 3: AI Email Generator */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide flex items-center gap-2">
-                      <Sparkles size={14} /> Cold Email (IA)
-                    </h4>
-                    {!generatedEmail && (
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); onGenerateEmail(biz); }}
-                        disabled={loadingEmail}
-                        className="text-[10px] bg-brand-600 hover:bg-brand-500 text-white px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50"
+              {/* Col 2: Digital Presence */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide flex items-center gap-2">
+                  <Globe size={14} /> Presença Digital
+                </h4>
+                <div className="space-y-2">
+
+                  {/* Botão de WhatsApp de Destaque */}
+                  {biz.phone && (
+                    <a
+                      href={waUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white p-2.5 rounded font-bold text-xs transition-colors shadow-lg shadow-emerald-500/20 mb-3"
+                    >
+                      <MessageCircle size={16} />
+                      Iniciar Conversa no WhatsApp
+                    </a>
+                  )}
+
+                  {biz.website ? (
+                    <div className="flex items-center justify-between bg-slate-900 p-2 rounded border border-slate-700">
+                      <div className="flex items-center gap-2 truncate">
+                        <Globe size={14} className="text-slate-500" />
+                        <span className="text-xs text-brand-400 truncate max-w-[150px]">{getHostname(biz.website)}</span>
+                      </div>
+                      <a
+                        href={biz.website}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white flex items-center gap-1 transition-colors"
                       >
-                        {loadingEmail ? <Loader2 className="animate-spin" size={10}/> : <Mail size={10} />}
-                        Gerar
-                      </button>
-                    )}
-                  </div>
-                  
-                  <div className="bg-slate-900 rounded border border-slate-700 flex flex-col h-full min-h-[150px]">
-                      {generatedEmail ? (
-                        <div className="flex flex-col h-full">
-                           <div className="flex-1 p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap overflow-y-auto custom-scrollbar max-h-[180px]">
-                              {generatedEmail}
-                           </div>
-                           <div className="border-t border-slate-800 p-2 flex justify-end bg-slate-900/50">
-                             <button
-                               onClick={(e) => { e.stopPropagation(); onCopyEmail(generatedEmail, biz.id); }}
-                               className="flex items-center gap-1.5 text-[10px] text-slate-400 hover:text-white transition-colors uppercase font-bold tracking-wider"
-                             >
-                               {copiedEmailId === biz.id ? <Check size={12} className="text-emerald-500"/> : <Copy size={12} />}
-                               {copiedEmailId === biz.id ? 'Copiado!' : 'Copiar'}
-                             </button>
-                           </div>
+                        Acessar <ExternalLink size={10} />
+                      </a>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-900/30 p-2 rounded border border-slate-800 border-dashed text-center text-xs text-slate-600">
+                      Website não identificado
+                    </div>
+                  )}
+
+                  {biz.socialLinks.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-2">
+                      {biz.socialLinks.map((link, idx) => (
+                        <a
+                          key={idx}
+                          href={link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded transition-colors border border-slate-700"
+                        >
+                          {getSocialIcon(link)}
+                          <span className="truncate flex-1">{getHostname(link)}</span>
+                          <ExternalLink size={12} className="opacity-50" />
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 italic">Nenhuma rede social identificada.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Col 3: AI Email Generator */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-brand-400 uppercase tracking-wide flex items-center gap-2">
+                    <Sparkles size={14} /> Cold Email (IA)
+                  </h4>
+                  {!generatedEmail && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onGenerateEmail(biz); }}
+                      disabled={loadingEmail}
+                      className="text-[10px] bg-brand-600 hover:bg-brand-500 text-white px-2 py-1 rounded flex items-center gap-1 transition-colors disabled:opacity-50"
+                    >
+                      {loadingEmail ? <Loader2 className="animate-spin" size={10} /> : <Mail size={10} />}
+                      Gerar
+                    </button>
+                  )}
+                </div>
+
+                <div className="bg-slate-900 rounded border border-slate-700 flex flex-col h-full min-h-[150px]">
+                  {generatedEmail ? (
+                    <div className="flex flex-col h-full">
+                      <div className="flex-1 p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap overflow-y-auto custom-scrollbar max-h-[180px]">
+                        {generatedEmail}
+                      </div>
+                      <div className="border-t border-slate-800 p-2 flex justify-end bg-slate-900/50">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onCopyEmail(generatedEmail, biz.id); }}
+                          className="flex items-center gap-1.5 text-[10px] text-slate-400 hover:text-white transition-colors uppercase font-bold tracking-wider"
+                        >
+                          {copiedEmailId === biz.id ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                          {copiedEmailId === biz.id ? 'Copiado!' : 'Copiar'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-slate-600 p-4 text-center">
+                      {loadingEmail ? (
+                        <div className="flex flex-col items-center gap-2 animate-pulse">
+                          <Sparkles size={20} />
+                          <span className="text-xs">Criando abordagem...</span>
                         </div>
                       ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-slate-600 p-4 text-center">
-                           {loadingEmail ? (
-                              <div className="flex flex-col items-center gap-2 animate-pulse">
-                                 <Sparkles size={20} />
-                                 <span className="text-xs">Criando abordagem...</span>
-                              </div>
-                           ) : (
-                              <>
-                                <Mail size={20} className="mb-2 opacity-50"/>
-                                <span className="text-xs">Gere um e-mail personalizado para prospecção.</span>
-                              </>
-                           )}
-                        </div>
+                        <>
+                          <Mail size={20} className="mb-2 opacity-50" />
+                          <span className="text-xs">Gere um e-mail personalizado para prospecção.</span>
+                        </>
                       )}
-                  </div>
+                    </div>
+                  )}
                 </div>
+              </div>
 
             </div>
           </div>
@@ -458,10 +471,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   const [customDateStart, setCustomDateStart] = useState<string>('');
   const [customDateEnd, setCustomDateEnd] = useState<string>('');
   const [locationFilter, setLocationFilter] = useState<LocationFilter>('all');
-  
+
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   const [viewLocationBiz, setViewLocationBiz] = useState<BusinessEntity | null>(null);
-  
+
   // Email States
   const [generatedEmails, setGeneratedEmails] = useState<Record<string, string>>({});
   const [loadingEmailId, setLoadingEmailId] = useState<string | null>(null);
@@ -490,7 +503,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
 
       if (activityFilter === 'custom') {
         if (!customDateStart && !customDateEnd) return true; // Se não escolheu nada ainda, mostra tudo
-        
+
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -498,15 +511,15 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
         let minDays = 0;
 
         if (customDateStart) {
-           const startDate = new Date(customDateStart);
-           const diffTime = Math.abs(today.getTime() - startDate.getTime());
-           maxDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+          const startDate = new Date(customDateStart);
+          const diffTime = Math.abs(today.getTime() - startDate.getTime());
+          maxDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         }
 
         if (customDateEnd) {
-            const endDate = new Date(customDateEnd);
-            const diffTime = Math.abs(today.getTime() - endDate.getTime());
-            minDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          const endDate = new Date(customDateEnd);
+          const diffTime = Math.abs(today.getTime() - endDate.getTime());
+          minDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         }
 
         const actualMin = Math.min(minDays, maxDays);
@@ -528,13 +541,13 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
         // Encontra o index
         const idx = filteredData.findIndex(d => d.id === id);
         if (idx !== -1) {
-           // Reseta layout a partir deste índice
-           listRef.current.resetAfterIndex(idx); 
-           // Se estiver fechando e abrindo outro, também precisamos resetar o anterior
-           if (!isClosing && prev) {
-             const prevIdx = filteredData.findIndex(d => d.id === prev);
-             if (prevIdx !== -1 && prevIdx < idx) listRef.current.resetAfterIndex(prevIdx);
-           }
+          // Reseta layout a partir deste índice
+          listRef.current.resetAfterIndex(idx);
+          // Se estiver fechando e abrindo outro, também precisamos resetar o anterior
+          if (!isClosing && prev) {
+            const prevIdx = filteredData.findIndex(d => d.id === prev);
+            if (prevIdx !== -1 && prevIdx < idx) listRef.current.resetAfterIndex(prevIdx);
+          }
         }
       }
       return isClosing ? null : id;
@@ -543,7 +556,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
 
   const handleToggleProspect = useCallback(async (e: React.MouseEvent, business: BusinessEntity) => {
     e.stopPropagation();
-    setLocalData(prev => prev.map(b => 
+    setLocalData(prev => prev.map(b =>
       b.id === business.id ? { ...b, isProspect: !b.isProspect } : b
     ));
     await dbService.toggleProspect(business);
@@ -587,6 +600,38 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     document.body.removeChild(link);
   }, [filteredData]);
 
+  const handleExportWebhook = useCallback(async () => {
+    const url = localStorage.getItem('vericorp_webhook_url');
+    if (!url) {
+      alert("Por favor, configure a URL do Webhook nas configurações (ícone de engrenagem) antes de exportar.");
+      return;
+    }
+
+    const confirmSend = window.confirm(`Deseja enviar ${filteredData.length} registros para o Webhook configurado?`);
+    if (!confirmSend) return;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exportedAt: new Date().toISOString(),
+          count: filteredData.length,
+          data: filteredData
+        })
+      });
+
+      if (response.ok) {
+        alert("Dados enviados para o Webhook com sucesso!");
+      } else {
+        alert(`Erro ao enviar: ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error("Webhook Export Error:", error);
+      alert("Falha na conexão com o Webhook.");
+    }
+  }, [filteredData]);
+
   // Função para calcular altura da linha dinamicamente
   const getItemSize = (index: number) => {
     const item = filteredData[index];
@@ -606,8 +651,8 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
     copiedEmailId,
     onViewMap: handleViewMap
   }), [
-    filteredData, expandedRowId, toggleRow, handleToggleProspect, 
-    handleGenerateEmail, generatedEmails, loadingEmailId, 
+    filteredData, expandedRowId, toggleRow, handleToggleProspect,
+    handleGenerateEmail, generatedEmails, loadingEmailId,
     copyToClipboard, copiedEmailId, handleViewMap
   ]);
 
@@ -629,11 +674,10 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
               <button
                 key={status}
                 onClick={() => setStatusFilter(status)}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${
-                  statusFilter === status 
-                    ? 'bg-brand-600 text-white shadow-lg shadow-brand-500/20' 
-                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-4 py-2 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${statusFilter === status
+                  ? 'bg-brand-600 text-white shadow-lg shadow-brand-500/20'
+                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 {status}
               </button>
@@ -641,68 +685,76 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-             <button
-               onClick={() => setLocationFilter(prev => prev === 'all' ? 'exact' : 'all')}
-               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors border ${
-                 locationFilter === 'exact' 
-                   ? 'bg-brand-900/40 text-brand-300 border-brand-500/50' 
-                   : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
-               }`}
-             >
-               <Target size={16} />
-               <span>{locationFilter === 'exact' ? 'Local Exato' : 'Toda Região'}</span>
-             </button>
+            <button
+              onClick={() => setLocationFilter(prev => prev === 'all' ? 'exact' : 'all')}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors border ${locationFilter === 'exact'
+                ? 'bg-brand-900/40 text-brand-300 border-brand-500/50'
+                : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                }`}
+            >
+              <Target size={16} />
+              <span>{locationFilter === 'exact' ? 'Local Exato' : 'Toda Região'}</span>
+            </button>
 
-             <div className="flex items-center gap-2 text-sm text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800 transition-all hover:border-slate-600">
-               <Calendar size={16} className={activityFilter === 'custom' ? 'text-brand-400' : ''} />
-               <select 
-                  value={activityFilter}
-                  onChange={(e) => setActivityFilter(e.target.value as ActivityFilter)}
-                  className="bg-transparent border-none text-slate-200 text-sm rounded focus:ring-0 py-0.5 px-2 cursor-pointer"
-               >
-                  <option value="all" className="bg-slate-800">Qualquer data</option>
-                  <option value="30days" className="bg-slate-800">Últimos 30 dias</option>
-                  <option value="90days" className="bg-slate-800">Últimos 90 dias</option>
-                  <option value="custom" className="bg-slate-800">Personalizado...</option>
-               </select>
-               
-               {/* Inputs de Data Personalizados (aparecem apenas se 'custom' for selecionado) */}
-               {activityFilter === 'custom' && (
-                 <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-700 animate-fadeIn">
-                   <input 
-                     type="date" 
-                     value={customDateStart}
-                     onChange={(e) => setCustomDateStart(e.target.value)}
-                     className="bg-slate-800 border border-slate-700 rounded text-xs text-white px-2 py-1 focus:ring-1 focus:ring-brand-500 outline-none"
-                     title="Data Inicial (Mais antiga)"
-                   />
-                   <span className="text-slate-500">-</span>
-                   <input 
-                     type="date" 
-                     value={customDateEnd}
-                     onChange={(e) => setCustomDateEnd(e.target.value)}
-                     className="bg-slate-800 border border-slate-700 rounded text-xs text-white px-2 py-1 focus:ring-1 focus:ring-brand-500 outline-none"
-                     title="Data Final (Mais recente)"
-                   />
-                 </div>
-               )}
-             </div>
+            <div className="flex items-center gap-2 text-sm text-slate-400 bg-slate-900/50 p-2 rounded-lg border border-slate-800 transition-all hover:border-slate-600">
+              <Calendar size={16} className={activityFilter === 'custom' ? 'text-brand-400' : ''} />
+              <select
+                value={activityFilter}
+                onChange={(e) => setActivityFilter(e.target.value as ActivityFilter)}
+                className="bg-transparent border-none text-slate-200 text-sm rounded focus:ring-0 py-0.5 px-2 cursor-pointer"
+              >
+                <option value="all" className="bg-slate-800">Qualquer data</option>
+                <option value="30days" className="bg-slate-800">Últimos 30 dias</option>
+                <option value="90days" className="bg-slate-800">Últimos 90 dias</option>
+                <option value="custom" className="bg-slate-800">Personalizado...</option>
+              </select>
 
-             {/* Badge Visual de Intervalo Ativo */}
-             {activityFilter === 'custom' && customDateStart && customDateEnd && (
-                <div className="hidden xl:flex items-center gap-1 bg-brand-500/10 text-brand-400 border border-brand-500/20 px-2 py-1 rounded text-xs">
-                   <Filter size={10} />
-                   <span>{new Date(customDateStart).toLocaleDateString('pt-BR')} - {new Date(customDateEnd).toLocaleDateString('pt-BR')}</span>
+              {/* Inputs de Data Personalizados (aparecem apenas se 'custom' for selecionado) */}
+              {activityFilter === 'custom' && (
+                <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-700 animate-fadeIn">
+                  <input
+                    type="date"
+                    value={customDateStart}
+                    onChange={(e) => setCustomDateStart(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded text-xs text-white px-2 py-1 focus:ring-1 focus:ring-brand-500 outline-none"
+                    title="Data Inicial (Mais antiga)"
+                  />
+                  <span className="text-slate-500">-</span>
+                  <input
+                    type="date"
+                    value={customDateEnd}
+                    onChange={(e) => setCustomDateEnd(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded text-xs text-white px-2 py-1 focus:ring-1 focus:ring-brand-500 outline-none"
+                    title="Data Final (Mais recente)"
+                  />
                 </div>
-             )}
+              )}
+            </div>
 
-             <button
+            {/* Badge Visual de Intervalo Ativo */}
+            {activityFilter === 'custom' && customDateStart && customDateEnd && (
+              <div className="hidden xl:flex items-center gap-1 bg-brand-500/10 text-brand-400 border border-brand-500/20 px-2 py-1 rounded text-xs">
+                <Filter size={10} />
+                <span>{new Date(customDateStart).toLocaleDateString('pt-BR')} - {new Date(customDateEnd).toLocaleDateString('pt-BR')}</span>
+              </div>
+            )}
+
+            <button
               onClick={handleExportCSV}
               disabled={filteredData.length === 0}
               className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition-colors"
               title="Exportar CSV"
             >
               <Download size={20} />
+            </button>
+
+            <button
+              onClick={handleExportWebhook}
+              disabled={filteredData.length === 0}
+              className="p-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg border border-brand-500 transition-colors shadow-lg shadow-brand-500/20"
+              title="Enviar para Webhook"
+            >
+              <Share2 size={20} />
             </button>
           </div>
         </div>
@@ -712,7 +764,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
       <div className="bg-slate-800 rounded-t-xl border border-slate-700 border-b-0">
         <div className="grid gap-4 py-3 px-2 text-slate-400 text-xs font-bold uppercase tracking-wider" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
           <div className="text-center">#</div>
-          <div className="text-center"><Star size={14} className="mx-auto"/></div>
+          <div className="text-center"><Star size={14} className="mx-auto" /></div>
           <div>Empresa</div>
           <div>Status</div>
           <div>Contato</div>
@@ -725,7 +777,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
       <div className="flex-1 bg-slate-800 rounded-b-xl border border-slate-700 overflow-hidden relative min-h-[500px]" ref={containerRef}>
         {filteredData.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
-             <p>Nenhum resultado encontrado.</p>
+            <p>Nenhum resultado encontrado.</p>
           </div>
         ) : (
           <List
@@ -744,7 +796,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
       </div>
 
       <div className="mt-2 text-xs text-slate-500 text-right">
-         Exibindo {filteredData.length} de {data.length} registros
+        Exibindo {filteredData.length} de {data.length} registros
       </div>
     </div>
   );
