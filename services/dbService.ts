@@ -463,3 +463,275 @@ export const leadListService = {
     return getLocalLeadAssignments();
   }
 };
+
+// --- Message Templates ---
+const TEMPLATES_KEY = 'vericorp_templates';
+
+export interface MessageTemplate {
+  id: string;
+  name: string;
+  content: string;
+  type: 'whatsapp' | 'email';
+  createdAt: string;
+}
+
+function getLocalTemplates(): MessageTemplate[] {
+  try {
+    const saved = localStorage.getItem(TEMPLATES_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalTemplates(templates: MessageTemplate[]) {
+  localStorage.setItem(TEMPLATES_KEY, JSON.stringify(templates));
+}
+
+export const templateService = {
+  /**
+   * Get all templates
+   */
+  getTemplates: async (): Promise<MessageTemplate[]> => {
+    return getLocalTemplates();
+  },
+
+  /**
+   * Create a new template
+   */
+  createTemplate: async (name: string, content: string, type: 'whatsapp' | 'email'): Promise<MessageTemplate> => {
+    const templates = getLocalTemplates();
+    const newTemplate: MessageTemplate = {
+      id: `tpl-${Date.now()}`,
+      name,
+      content,
+      type,
+      createdAt: new Date().toISOString()
+    };
+    saveLocalTemplates([...templates, newTemplate]);
+    return newTemplate;
+  },
+
+  /**
+   * Update a template
+   */
+  updateTemplate: async (id: string, updates: Partial<MessageTemplate>): Promise<void> => {
+    const templates = getLocalTemplates().map(t =>
+      t.id === id ? { ...t, ...updates } : t
+    );
+    saveLocalTemplates(templates);
+  },
+
+  /**
+   * Delete a template
+   */
+  deleteTemplate: async (id: string): Promise<void> => {
+    const templates = getLocalTemplates().filter(t => t.id !== id);
+    saveLocalTemplates(templates);
+  },
+
+  /**
+   * Apply template variables
+   * Variables: {{nome}}, {{empresa}}, {{telefone}}, {{endereco}}, {{categoria}}
+   */
+  applyVariables: (template: string, business: { name?: string; phone?: string; address?: string; category?: string }): string => {
+    return template
+      .replace(/\{\{nome\}\}/gi, business.name || '')
+      .replace(/\{\{empresa\}\}/gi, business.name || '')
+      .replace(/\{\{telefone\}\}/gi, business.phone || '')
+      .replace(/\{\{endereco\}\}/gi, business.address || '')
+      .replace(/\{\{categoria\}\}/gi, business.category || '');
+  }
+};
+
+// --- Lead Scoring ---
+const LEAD_SCORES_KEY = 'vericorp_lead_scores';
+
+export interface LeadScore {
+  businessId: string;
+  score: number; // 0-100
+  factors: {
+    hasPhone: boolean;
+    hasWebsite: boolean;
+    hasAddress: boolean;
+    categoryRelevance: number;
+    recentActivity: boolean;
+  };
+  calculatedAt: string;
+}
+
+function getLocalLeadScores(): Record<string, LeadScore> {
+  try {
+    const saved = localStorage.getItem(LEAD_SCORES_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalLeadScores(scores: Record<string, LeadScore>) {
+  localStorage.setItem(LEAD_SCORES_KEY, JSON.stringify(scores));
+}
+
+export const leadScoreService = {
+  /**
+   * Calculate and store lead score for a business
+   */
+  calculateScore: (business: {
+    id: string;
+    name: string;
+    phone?: string | null;
+    website?: string | null;
+    address?: string;
+    category?: string;
+    description?: string;
+  }): LeadScore => {
+    let score = 0;
+    const factors = {
+      hasPhone: false,
+      hasWebsite: false,
+      hasAddress: false,
+      categoryRelevance: 0,
+      recentActivity: false
+    };
+
+    // Phone: +20 points
+    if (business.phone && business.phone.length > 8) {
+      score += 20;
+      factors.hasPhone = true;
+    }
+
+    // Website: +25 points
+    if (business.website && business.website.includes('.')) {
+      score += 25;
+      factors.hasWebsite = true;
+    }
+
+    // Address: +15 points
+    if (business.address && business.address.length > 10) {
+      score += 15;
+      factors.hasAddress = true;
+    }
+
+    // Category relevance: +20 points (based on specificity)
+    if (business.category) {
+      const categoryScore = Math.min(20, business.category.length / 2);
+      score += categoryScore;
+      factors.categoryRelevance = categoryScore;
+    }
+
+    // Description/Activity: +20 points
+    if (business.description && business.description.length > 50) {
+      score += 20;
+      factors.recentActivity = true;
+    }
+
+    const leadScore: LeadScore = {
+      businessId: business.id,
+      score: Math.min(100, Math.round(score)),
+      factors,
+      calculatedAt: new Date().toISOString()
+    };
+
+    // Save to local storage
+    const scores = getLocalLeadScores();
+    scores[business.id] = leadScore;
+    saveLocalLeadScores(scores);
+
+    return leadScore;
+  },
+
+  /**
+   * Get cached score for a business
+   */
+  getScore: (businessId: string): LeadScore | null => {
+    const scores = getLocalLeadScores();
+    return scores[businessId] || null;
+  },
+
+  /**
+   * Get score label and color
+   */
+  getScoreLabel: (score: number): { label: string; color: string; emoji: string } => {
+    if (score >= 80) return { label: 'Quente', color: 'text-red-400', emoji: '🔥' };
+    if (score >= 60) return { label: 'Morno', color: 'text-amber-400', emoji: '🌡️' };
+    if (score >= 40) return { label: 'Potencial', color: 'text-yellow-400', emoji: '💡' };
+    return { label: 'Frio', color: 'text-blue-400', emoji: '❄️' };
+  },
+
+  /**
+   * Batch calculate scores
+   */
+  calculateBatch: (businesses: any[]): void => {
+    businesses.forEach(b => leadScoreService.calculateScore(b));
+  }
+};
+
+// --- CNPJ Enrichment Service ---
+export interface CNPJEnrichmentData {
+  cnpj: string;
+  razaoSocial: string;
+  nomeFantasia: string;
+  situacao: string;
+  dataAbertura: string;
+  porte: string;
+  capitalSocial: string;
+  atividadePrincipal: string;
+  telefone: string;
+  email: string;
+  endereco: string;
+  socios: { nome: string; cargo: string }[];
+}
+
+export const cnpjService = {
+  /**
+   * Enrich business data with CNPJ information
+   */
+  enrich: async (cnpj: string): Promise<CNPJEnrichmentData | null> => {
+    try {
+      const response = await fetch(`/api/cnpj?cnpj=${encodeURIComponent(cnpj)}`);
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      return {
+        cnpj: data.cnpj,
+        razaoSocial: data.razaoSocial,
+        nomeFantasia: data.nomeFantasia,
+        situacao: data.situacao,
+        dataAbertura: data.dataAbertura,
+        porte: data.porte,
+        capitalSocial: data.capitalSocial,
+        atividadePrincipal: data.atividadePrincipal,
+        telefone: data.telefone,
+        email: data.email,
+        endereco: `${data.logradouro}, ${data.numero} - ${data.bairro}, ${data.municipio}/${data.uf}`,
+        socios: (data.qsa || []).map((s: any) => ({ nome: s.nome, cargo: s.qual }))
+      };
+    } catch (error) {
+      console.error('CNPJ Enrichment Error:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Extract CNPJ from text (if present)
+   */
+  extractCNPJ: (text: string): string | null => {
+    // Match CNPJ patterns: XX.XXX.XXX/XXXX-XX or just 14 digits
+    const patterns = [
+      /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/,
+      /\d{14}/
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return match[0].replace(/[^\d]/g, '');
+    }
+    return null;
+  }
+};
