@@ -12,9 +12,10 @@ import { dbService, rateLimitService, searchHistoryService } from './services/db
 import { SearchHistory } from './components/SearchHistory';
 import { LeadListsManager } from './components/LeadLists';
 import { Dashboard } from './components/Dashboard';
+import { MessageTemplates } from './components/MessageTemplates';
 import {
   Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info,
-  LayoutList, KanbanSquare, Trash2, Check, Settings, LogOut, BarChart3, Tag
+  LayoutList, KanbanSquare, Trash2, Check, Settings, LogOut, BarChart3, Tag, MessageSquare
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -65,6 +66,9 @@ const App: React.FC = () => {
 
   // Estado para Dashboard
   const [showDashboard, setShowDashboard] = useState(false);
+
+  // Estado para Message Templates
+  const [showTemplates, setShowTemplates] = useState(false);
 
   // Estado para prospects
   const [prospects, setProspects] = useState<BusinessEntity[]>([]);
@@ -295,6 +299,13 @@ const App: React.FC = () => {
               title="Dashboard"
             >
               <BarChart3 size={20} />
+            </button>
+            <button
+              onClick={() => setShowTemplates(true)}
+              className="text-slate-400 hover:text-white transition-colors p-2 hover:bg-slate-800 rounded-lg"
+              title="Templates de Mensagem"
+            >
+              <MessageSquare size={20} />
             </button>
             <button
               onClick={() => setShowLeadLists(true)}
@@ -551,6 +562,7 @@ const App: React.FC = () => {
       <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
       <LeadListsManager isOpen={showLeadLists} onClose={() => setShowLeadLists(false)} />
       <Dashboard isOpen={showDashboard} onClose={() => setShowDashboard(false)} prospects={prospects} />
+      <MessageTemplates isOpen={showTemplates} onClose={() => setShowTemplates(false)} />
     </div>
   );
 };

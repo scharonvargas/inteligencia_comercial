@@ -254,30 +254,79 @@ function saveLocalRateLimit(data: RateLimitData) {
 export const rateLimitService = {
   /**
    * Check if user can perform a search (within daily limit)
+   * Uses Supabase if available, otherwise localStorage
    */
   canSearch: async (userId?: string): Promise<{ allowed: boolean; remaining: number; limit: number }> => {
-    // For now, use local storage (can be upgraded to Supabase later)
-    const data = getLocalRateLimit();
-    const remaining = Math.max(0, DAILY_SEARCH_LIMIT - data.count);
-    return {
-      allowed: data.count < DAILY_SEARCH_LIMIT,
-      remaining,
-      limit: DAILY_SEARCH_LIMIT
-    };
+    const today = new Date().toISOString().split('T')[0];
+
+    // Try Supabase first if user is authenticated
+    if (supabase && userId) {
+      try {
+        const { data, error } = await supabase
+          .from('rate_limits')
+          .select('search_count')
+          .eq('user_id', userId)
+          .eq('reset_date', today)
+          .single();
+
+        if (!error && data) {
+          const remaining = Math.max(0, DAILY_SEARCH_LIMIT - data.search_count);
+          return { allowed: data.search_count < DAILY_SEARCH_LIMIT, remaining, limit: DAILY_SEARCH_LIMIT };
+        }
+        // No record for today means 0 searches
+        return { allowed: true, remaining: DAILY_SEARCH_LIMIT, limit: DAILY_SEARCH_LIMIT };
+      } catch {
+        // Fallback to localStorage
+      }
+    }
+
+    // Fallback: localStorage
+    const localData = getLocalRateLimit();
+    if (localData.date !== today) {
+      return { allowed: true, remaining: DAILY_SEARCH_LIMIT, limit: DAILY_SEARCH_LIMIT };
+    }
+    const remaining = Math.max(0, DAILY_SEARCH_LIMIT - localData.count);
+    return { allowed: localData.count < DAILY_SEARCH_LIMIT, remaining, limit: DAILY_SEARCH_LIMIT };
   },
 
   /**
    * Increment search count after a successful search
    */
   incrementSearchCount: async (userId?: string): Promise<void> => {
-    const data = getLocalRateLimit();
     const today = new Date().toISOString().split('T')[0];
 
-    if (data.date !== today) {
-      // New day, reset counter
+    // Try Supabase first
+    if (supabase && userId) {
+      try {
+        const { data: existing } = await supabase
+          .from('rate_limits')
+          .select('id, search_count')
+          .eq('user_id', userId)
+          .eq('reset_date', today)
+          .single();
+
+        if (existing) {
+          await supabase
+            .from('rate_limits')
+            .update({ search_count: existing.search_count + 1 })
+            .eq('id', existing.id);
+        } else {
+          await supabase
+            .from('rate_limits')
+            .insert({ user_id: userId, search_count: 1, reset_date: today });
+        }
+        return;
+      } catch {
+        // Fallback to localStorage
+      }
+    }
+
+    // Fallback: localStorage
+    const localData = getLocalRateLimit();
+    if (localData.date !== today) {
       saveLocalRateLimit({ count: 1, date: today });
     } else {
-      saveLocalRateLimit({ count: data.count + 1, date: today });
+      saveLocalRateLimit({ count: localData.count + 1, date: today });
     }
   },
 
@@ -285,17 +334,39 @@ export const rateLimitService = {
    * Get current search count and remaining
    */
   getSearchCount: async (userId?: string): Promise<{ used: number; remaining: number; limit: number }> => {
-    const data = getLocalRateLimit();
     const today = new Date().toISOString().split('T')[0];
 
-    // Reset if different day
-    if (data.date !== today) {
-      return { used: 0, remaining: DAILY_SEARCH_LIMIT, limit: DAILY_SEARCH_LIMIT };
+    // Try Supabase first
+    if (supabase && userId) {
+      try {
+        const { data } = await supabase
+          .from('rate_limits')
+          .select('search_count')
+          .eq('user_id', userId)
+          .eq('reset_date', today)
+          .single();
+
+        if (data) {
+          return {
+            used: data.search_count,
+            remaining: Math.max(0, DAILY_SEARCH_LIMIT - data.search_count),
+            limit: DAILY_SEARCH_LIMIT
+          };
+        }
+        return { used: 0, remaining: DAILY_SEARCH_LIMIT, limit: DAILY_SEARCH_LIMIT };
+      } catch {
+        // Fallback
+      }
     }
 
+    // Fallback: localStorage
+    const localData = getLocalRateLimit();
+    if (localData.date !== today) {
+      return { used: 0, remaining: DAILY_SEARCH_LIMIT, limit: DAILY_SEARCH_LIMIT };
+    }
     return {
-      used: data.count,
-      remaining: Math.max(0, DAILY_SEARCH_LIMIT - data.count),
+      used: localData.count,
+      remaining: Math.max(0, DAILY_SEARCH_LIMIT - localData.count),
       limit: DAILY_SEARCH_LIMIT
     };
   }

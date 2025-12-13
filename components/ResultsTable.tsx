@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import * as ReactWindow from 'react-window';
 import { BusinessEntity, BusinessStatus } from '../types';
 import { generateOutreachEmail } from '../services/geminiService';
-import { dbService } from '../services/dbService';
+import { dbService, leadScoreService } from '../services/dbService';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import {
@@ -228,6 +228,19 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
           {/* 3. Company Info */}
           <div className="overflow-hidden">
             <div className="flex items-center gap-2">
+              {/* Lead Score Badge */}
+              {(() => {
+                const scoreData = leadScoreService.calculateScore(biz);
+                const label = leadScoreService.getScoreLabel(scoreData.score);
+                return (
+                  <span
+                    className={`text-xs ${label.color} shrink-0`}
+                    title={`Score: ${scoreData.score}/100`}
+                  >
+                    {label.emoji}
+                  </span>
+                );
+              })()}
               <div className="font-bold text-slate-200 truncate" title={biz.name}>{biz.name}</div>
               {biz.matchType === 'NEARBY' && (
                 <span className="shrink-0 text-[10px] uppercase font-bold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1" title="Região Próxima">
