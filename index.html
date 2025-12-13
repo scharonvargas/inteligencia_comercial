@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VeriCorp | AI Business Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <!-- Leaflet Marker Cluster CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#f0f9ff',
+                100: '#e0f2fe',
+                500: '#0ea5e9',
+                600: '#0284c7',
+                900: '#0c4a6e',
+              },
+              slate: {
+                850: '#151e2e',
+                900: '#0f172a',
+                950: '#020617',
+              }
+            },
+            animation: {
+              fadeIn: 'fadeIn 0.5s ease-out',
+              slideUp: 'slideUp 0.5s ease-out',
+              progress: 'progress 2s infinite linear'
+            },
+            keyframes: {
+              fadeIn: {
+                '0%': { opacity: '0' },
+                '100%': { opacity: '1' },
+              },
+              slideUp: {
+                '0%': { transform: 'translateY(20px)', opacity: '0' },
+                '100%': { transform: 'translateY(0)', opacity: '1' },
+              },
+              progress: {
+                '0%': { transform: 'translateX(-100%)' },
+                '100%': { transform: 'translateX(100%)' },
+              }
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        background-color: #0f172a;
+        color: #e2e8f0;
+      }
+      .custom-scrollbar::-webkit-scrollbar { height: 8px; width: 8px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+      
+      .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+        background: #1e293b !important;
+        color: #f1f5f9 !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+      }
+      .leaflet-container a.leaflet-popup-close-button { color: #94a3b8 !important; }
+      
+      /* Cluster overrides for dark theme */
+      .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
+        background-color: rgba(15, 23, 42, 0.6) !important;
+      }
+      .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+        background-color: rgba(14, 165, 233, 0.8) !important;
+        color: white !important;
+        font-weight: bold;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react-leaflet": "https://aistudiocdn.com/react-leaflet@^5.0.0",
+    "leaflet": "https://aistudiocdn.com/leaflet@^1.9.4",
+    "leaflet.markercluster": "https://aistudiocdn.com/leaflet.markercluster@^1.5.3",
+    "react-leaflet-cluster": "https://aistudiocdn.com/react-leaflet-cluster@^2.1.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
+    "vite": "https://aistudiocdn.com/vite@^7.2.4",
+    "@supabase/supabase-js": "https://aistudiocdn.com/@supabase/supabase-js@^2.85.0",
+    "recharts": "https://aistudiocdn.com/recharts@^3.5.0",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
+    "react-window": "https://aistudiocdn.com/react-window@^2.2.3"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
