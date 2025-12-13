@@ -1,9 +1,10 @@
+
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { BusinessEntity, BusinessStatus } from "../types";
 
 // Credenciais fornecidas diretamente para garantir conexão
-const supabaseUrl = process.env.SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || "https://rjxbiktpmyapizmaoqdq.supabase.co";
-const supabaseKey = process.env.SUPABASE_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqeGJpa3RwbXlhcGl6bWFvcWRxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQwMjgzMzgsImV4cCI6MjA3OTYwNDMzOH0.QWP6J3y0k9GeA7zjXgnz1t_7ldOU7JimrZhqMvS6gXM";
+const supabaseUrl = process.env.SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || "https://eqqgdlsikdtelwjosxvg.supabase.co";
+const supabaseKey = process.env.SUPABASE_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVxcWdkbHNpa2R0ZWx3am9zeHZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU0OTM5NzYsImV4cCI6MjA4MTA2OTk3Nn0.555jr7W3mJfuX7Er0v3HWuZ57HFR8Xlo57Yr96ECEys";
 
 let supabase: SupabaseClient | null = null;
 
@@ -92,7 +93,7 @@ export const dbService = {
           .from('prospects')
           .delete()
           .eq('id', existing.id);
-        
+
         if (deleteError) throw deleteError;
         return false; // Não é mais prospect
       } else {
@@ -186,12 +187,12 @@ export const dbService = {
       // Improved error logging
       const errMsg = error.message || JSON.stringify(error, null, 2);
       console.error("Erro ao buscar prospects do Supabase, tentando local:", errMsg);
-      
+
       // Hint for missing table
       if (errMsg.includes("relation") && errMsg.includes("does not exist")) {
         console.info("%c⚠️ A tabela 'prospects' não existe no Supabase. Crie-a usando o SQL fornecido.", "color: orange; font-weight: bold;");
       }
-      
+
       return getLocalProspects();
     }
   }
@@ -201,7 +202,7 @@ export const dbService = {
 function toggleLocal(business: BusinessEntity): boolean {
   const current = getLocalProspects();
   const exists = current.find(p => p.id === business.id || (p.name === business.name && p.address === business.address));
-  
+
   if (exists) {
     const filtered = current.filter(p => p.id !== exists.id);
     saveLocalProspects(filtered);
