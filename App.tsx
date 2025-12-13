@@ -251,10 +251,11 @@ const App: React.FC = () => {
     );
   }
 
-  // Show login page if not authenticated
-  if (!user) {
-    return <LoginPage />;
-  }
+  // TEMPORARILY DISABLED: Show login page if not authenticated
+  // TODO: Re-enable after configuring Supabase redirect URL in Vercel
+  // if (!user) {
+  //   return <LoginPage />;
+  // }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-500/30 flex flex-col">
