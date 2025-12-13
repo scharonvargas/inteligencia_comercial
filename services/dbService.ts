@@ -221,3 +221,245 @@ function updateLocalStage(businessId: string, newStage: string) {
   });
   saveLocalProspects(updated);
 }
+
+// --- Rate Limiting ---
+const RATE_LIMIT_KEY = 'vericorp_rate_limit';
+const DAILY_SEARCH_LIMIT = 50;
+
+interface RateLimitData {
+  count: number;
+  date: string;
+}
+
+function getLocalRateLimit(): RateLimitData {
+  try {
+    const saved = localStorage.getItem(RATE_LIMIT_KEY);
+    if (saved) {
+      const data = JSON.parse(saved);
+      const today = new Date().toISOString().split('T')[0];
+      // Reset if different day
+      if (data.date !== today) {
+        return { count: 0, date: today };
+      }
+      return data;
+    }
+  } catch { }
+  return { count: 0, date: new Date().toISOString().split('T')[0] };
+}
+
+function saveLocalRateLimit(data: RateLimitData) {
+  localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(data));
+}
+
+export const rateLimitService = {
+  /**
+   * Check if user can perform a search (within daily limit)
+   */
+  canSearch: async (userId?: string): Promise<{ allowed: boolean; remaining: number; limit: number }> => {
+    // For now, use local storage (can be upgraded to Supabase later)
+    const data = getLocalRateLimit();
+    const remaining = Math.max(0, DAILY_SEARCH_LIMIT - data.count);
+    return {
+      allowed: data.count < DAILY_SEARCH_LIMIT,
+      remaining,
+      limit: DAILY_SEARCH_LIMIT
+    };
+  },
+
+  /**
+   * Increment search count after a successful search
+   */
+  incrementSearchCount: async (userId?: string): Promise<void> => {
+    const data = getLocalRateLimit();
+    const today = new Date().toISOString().split('T')[0];
+
+    if (data.date !== today) {
+      // New day, reset counter
+      saveLocalRateLimit({ count: 1, date: today });
+    } else {
+      saveLocalRateLimit({ count: data.count + 1, date: today });
+    }
+  },
+
+  /**
+   * Get current search count and remaining
+   */
+  getSearchCount: async (userId?: string): Promise<{ used: number; remaining: number; limit: number }> => {
+    const data = getLocalRateLimit();
+    const today = new Date().toISOString().split('T')[0];
+
+    // Reset if different day
+    if (data.date !== today) {
+      return { used: 0, remaining: DAILY_SEARCH_LIMIT, limit: DAILY_SEARCH_LIMIT };
+    }
+
+    return {
+      used: data.count,
+      remaining: Math.max(0, DAILY_SEARCH_LIMIT - data.count),
+      limit: DAILY_SEARCH_LIMIT
+    };
+  }
+};
+
+// --- Search History ---
+const SEARCH_HISTORY_KEY = 'vericorp_search_history';
+const MAX_HISTORY_ITEMS = 20;
+
+export interface SearchHistoryItem {
+  id: string;
+  segment: string;
+  region: string;
+  resultsCount: number;
+  createdAt: string;
+}
+
+function getLocalSearchHistory(): SearchHistoryItem[] {
+  try {
+    const saved = localStorage.getItem(SEARCH_HISTORY_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalSearchHistory(history: SearchHistoryItem[]) {
+  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY_ITEMS)));
+}
+
+export const searchHistoryService = {
+  /**
+   * Save a new search to history
+   */
+  saveSearch: async (segment: string, region: string, resultsCount: number): Promise<void> => {
+    const history = getLocalSearchHistory();
+    const newItem: SearchHistoryItem = {
+      id: `search-${Date.now()}`,
+      segment: segment || 'Varredura Geral',
+      region,
+      resultsCount,
+      createdAt: new Date().toISOString()
+    };
+    // Add to beginning, remove duplicates
+    const filtered = history.filter(h => !(h.segment === newItem.segment && h.region === newItem.region));
+    saveLocalSearchHistory([newItem, ...filtered]);
+  },
+
+  /**
+   * Get search history
+   */
+  getHistory: async (limit: number = 10): Promise<SearchHistoryItem[]> => {
+    return getLocalSearchHistory().slice(0, limit);
+  },
+
+  /**
+   * Clear all history
+   */
+  clearHistory: async (): Promise<void> => {
+    localStorage.removeItem(SEARCH_HISTORY_KEY);
+  }
+};
+
+// --- Lead Lists ---
+const LEAD_LISTS_KEY = 'vericorp_lead_lists';
+const LEAD_ASSIGNMENTS_KEY = 'vericorp_lead_assignments';
+
+export interface LeadList {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: string;
+}
+
+function getLocalLeadLists(): LeadList[] {
+  try {
+    const saved = localStorage.getItem(LEAD_LISTS_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalLeadLists(lists: LeadList[]) {
+  localStorage.setItem(LEAD_LISTS_KEY, JSON.stringify(lists));
+}
+
+function getLocalLeadAssignments(): Record<string, string> {
+  try {
+    const saved = localStorage.getItem(LEAD_ASSIGNMENTS_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalLeadAssignments(assignments: Record<string, string>) {
+  localStorage.setItem(LEAD_ASSIGNMENTS_KEY, JSON.stringify(assignments));
+}
+
+export const leadListService = {
+  /**
+   * Get all lead lists
+   */
+  getLists: async (): Promise<LeadList[]> => {
+    return getLocalLeadLists();
+  },
+
+  /**
+   * Create a new list
+   */
+  createList: async (name: string, color: string = '#6366f1'): Promise<LeadList> => {
+    const lists = getLocalLeadLists();
+    const newList: LeadList = {
+      id: `list-${Date.now()}`,
+      name,
+      color,
+      createdAt: new Date().toISOString()
+    };
+    saveLocalLeadLists([...lists, newList]);
+    return newList;
+  },
+
+  /**
+   * Delete a list
+   */
+  deleteList: async (listId: string): Promise<void> => {
+    const lists = getLocalLeadLists().filter(l => l.id !== listId);
+    saveLocalLeadLists(lists);
+    // Also remove assignments
+    const assignments = getLocalLeadAssignments();
+    for (const key of Object.keys(assignments)) {
+      if (assignments[key] === listId) {
+        delete assignments[key];
+      }
+    }
+    saveLocalLeadAssignments(assignments);
+  },
+
+  /**
+   * Assign a lead to a list
+   */
+  assignToList: async (businessId: string, listId: string | null): Promise<void> => {
+    const assignments = getLocalLeadAssignments();
+    if (listId === null) {
+      delete assignments[businessId];
+    } else {
+      assignments[businessId] = listId;
+    }
+    saveLocalLeadAssignments(assignments);
+  },
+
+  /**
+   * Get list assignment for a business
+   */
+  getListForBusiness: async (businessId: string): Promise<string | null> => {
+    const assignments = getLocalLeadAssignments();
+    return assignments[businessId] || null;
+  },
+
+  /**
+   * Get all assignments
+   */
+  getAllAssignments: async (): Promise<Record<string, string>> => {
+    return getLocalLeadAssignments();
+  }
+};

@@ -6,10 +6,15 @@ import { ResultsMap } from './components/ResultsMap';
 import { KanbanBoard } from './components/KanbanBoard';
 import { AddressAutocomplete } from './components/AddressAutocomplete';
 import { SettingsModal } from './components/SettingsModal';
-import { dbService } from './services/dbService';
+import { LoginPage } from './components/LoginPage';
+import { useAuth } from './contexts/AuthContext';
+import { dbService, rateLimitService, searchHistoryService } from './services/dbService';
+import { SearchHistory } from './components/SearchHistory';
+import { LeadListsManager } from './components/LeadLists';
+import { Dashboard } from './components/Dashboard';
 import {
   Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info,
-  LayoutList, KanbanSquare, Trash2, Check, Settings
+  LayoutList, KanbanSquare, Trash2, Check, Settings, LogOut, BarChart3, Tag
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -19,6 +24,8 @@ const STORAGE_KEYS = {
 };
 
 const App: React.FC = () => {
+  const { user, loading: authLoading, signOut } = useAuth();
+
   // Inicializa estados buscando do localStorage se existir
   const [segment, setSegment] = useState(() => localStorage.getItem(STORAGE_KEYS.SEGMENT) || '');
   const [region, setRegion] = useState(() => localStorage.getItem(STORAGE_KEYS.REGION) || '');
@@ -50,6 +57,18 @@ const App: React.FC = () => {
   // Estado para Modal de Configurações
   const [showSettings, setShowSettings] = useState(false);
 
+  // Estado para Rate Limiting
+  const [searchesRemaining, setSearchesRemaining] = useState<number | null>(null);
+
+  // Estado para Lead Lists Manager
+  const [showLeadLists, setShowLeadLists] = useState(false);
+
+  // Estado para Dashboard
+  const [showDashboard, setShowDashboard] = useState(false);
+
+  // Estado para prospects
+  const [prospects, setProspects] = useState<BusinessEntity[]>([]);
+
   const handleStopSearch = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -71,6 +90,24 @@ const App: React.FC = () => {
     checkDb();
   }, []);
 
+  // Load initial rate limit count
+  useEffect(() => {
+    const loadRateLimit = async () => {
+      const data = await rateLimitService.getSearchCount();
+      setSearchesRemaining(data.remaining);
+    };
+    loadRateLimit();
+  }, []);
+
+  // Load prospects on mount
+  useEffect(() => {
+    const loadProspects = async () => {
+      const allProspects = await dbService.getAllProspects();
+      setProspects(allProspects);
+    };
+    loadProspects();
+  }, []);
+
   const handleSearch = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!region) return;
@@ -88,6 +125,15 @@ const App: React.FC = () => {
       } catch (err) {
         setError("Sistema de Chave API indisponível. Verifique se o ambiente está configurado.");
       }
+    }
+
+    // Check rate limit before proceeding
+    const rateCheck = await rateLimitService.canSearch();
+    setSearchesRemaining(rateCheck.remaining);
+
+    if (!rateCheck.allowed) {
+      setError(`Limite diário de ${rateCheck.limit} buscas atingido. Tente novamente amanhã.`);
+      return;
     }
 
     setIsLoading(true);
@@ -146,6 +192,14 @@ const App: React.FC = () => {
       // Nota: fetchAndAnalyzeBusinesses retorna o array completo no final, 
       // mas já fomos atualizando o estado via callback, então não precisamos setar de novo aqui
       // a menos que queiramos garantir sincronia total.
+
+      // Increment rate limit counter after successful search
+      await rateLimitService.incrementSearchCount();
+      const updatedLimit = await rateLimitService.getSearchCount();
+      setSearchesRemaining(updatedLimit.remaining);
+
+      // Save to search history
+      await searchHistoryService.saveSearch(segment, region, results.length);
     } catch (err: any) {
       setError(err.message || "Ocorreu um erro inesperado.");
     } finally {
@@ -184,6 +238,20 @@ const App: React.FC = () => {
     setTimeout(() => setCacheCleaned(false), 2000);
   }, []);
 
+  // Show loading state while checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <Loader2 className="animate-spin text-brand-500" size={48} />
+      </div>
+    );
+  }
+
+  // Show login page if not authenticated
+  if (!user) {
+    return <LoginPage />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-brand-500/30 flex flex-col">
       {/* Header */}
@@ -213,15 +281,41 @@ const App: React.FC = () => {
                 </button>
               </div>
             )}
-            <div className="text-xs text-slate-500 hidden md:block">
-              Gemini 2.5 Flash
+            <div className="text-xs text-slate-500 hidden md:flex items-center gap-2">
+              <span>Gemini 2.5 Flash</span>
+              {searchesRemaining !== null && (
+                <span className={`px-2 py-0.5 rounded-full ${searchesRemaining > 10 ? 'bg-emerald-500/20 text-emerald-400' : searchesRemaining > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/20 text-red-400'}`}>
+                  {searchesRemaining} buscas restantes
+                </span>
+              )}
             </div>
+            <button
+              onClick={() => setShowDashboard(true)}
+              className="text-slate-400 hover:text-white transition-colors p-2 hover:bg-slate-800 rounded-lg"
+              title="Dashboard"
+            >
+              <BarChart3 size={20} />
+            </button>
+            <button
+              onClick={() => setShowLeadLists(true)}
+              className="text-slate-400 hover:text-white transition-colors p-2 hover:bg-slate-800 rounded-lg"
+              title="Gerenciar Listas"
+            >
+              <Tag size={20} />
+            </button>
             <button
               onClick={() => setShowSettings(true)}
               className="text-slate-400 hover:text-white transition-colors p-2 hover:bg-slate-800 rounded-lg"
               title="Configurações"
             >
               <Settings size={20} />
+            </button>
+            <button
+              onClick={signOut}
+              className="text-slate-400 hover:text-red-400 transition-colors p-2 hover:bg-slate-800 rounded-lg"
+              title="Sair"
+            >
+              <LogOut size={20} />
             </button>
           </div>
         </div>
@@ -334,6 +428,14 @@ const App: React.FC = () => {
                   </>
                 )}
               </button>
+
+              {/* Search History */}
+              <SearchHistory
+                onSelectSearch={(seg, reg) => {
+                  setSegment(seg);
+                  setRegion(reg);
+                }}
+              />
             </div>
           </form>
 
@@ -447,6 +549,8 @@ const App: React.FC = () => {
       </footer>
 
       <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      <LeadListsManager isOpen={showLeadLists} onClose={() => setShowLeadLists(false)} />
+      <Dashboard isOpen={showDashboard} onClose={() => setShowDashboard(false)} prospects={prospects} />
     </div>
   );
 };
