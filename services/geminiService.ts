@@ -176,16 +176,32 @@ function cleanAndParseJSON(text: string): any[] {
 
   // Estratégia A: Tentar parse como JSON Array completo
   try {
-    const fixedJsonStr = cleaned.replace(/'/g, '"'); // Normaliza aspas simples
+    // 1. Remove vírgulas trailling em objetos/arrays (ex: {a:1,} -> {a:1})
+    let fixedJsonStr = cleaned.replace(/,\s*([\]}])/g, '$1');
+    // 2. Normaliza aspas simples para duplas (com cuidado para não quebrar texto interno)
+    // OBS: Substituição global de ' por " é perigosa se houver apóstrofos (d'agua). 
+    // Melhor tentar parse direto primeiro.
+    
     const parsed = JSON.parse(fixedJsonStr);
     if (Array.isArray(parsed)) return restoreUrls(parsed, urlMap);
     if (typeof parsed === 'object' && parsed !== null) return [restoreUrls(parsed, urlMap)];
   } catch (e) {
-    // Falha normal se estiver truncado ou for NDJSON
+    // Tenta conserto agressivo se falhar
+    try {
+        // Fallback: fix aggressive quotes errors if simple parse failed
+        const aggressiveFix = cleaned
+            .replace(/'/g, '"') // Troca aspas simples por duplas
+            .replace(/,\s*([\]}])/g, '$1'); // Remove vírgulas sobrando
+        
+        const parsed = JSON.parse(aggressiveFix);
+        if (Array.isArray(parsed)) return restoreUrls(parsed, urlMap);
+        if (typeof parsed === 'object' && parsed !== null) return [restoreUrls(parsed, urlMap)];
+    } catch (e2) {
+        // Continue to Strategy B
+    }
   }
 
-  // Estratégia B: Parse Linha a Linha (NDJSON / JSON Lines)
-  // Divide por quebras de linha e tenta parsear cada linha como um objeto
+  // Estratégia B: Parse Linha a Linha (NDJSON / JSON Lines) - Útil se o array foi quebrado
   const lines = cleaned.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
@@ -193,7 +209,8 @@ function cleanAndParseJSON(text: string): any[] {
     
     // Ignora início/fim de array solto
     if (trimmed === '[' || trimmed === ']') continue;
-    // Remove vírgula final se houver (comum em listas)
+    
+    // Tenta limpar vírgula final
     const lineContent = trimmed.replace(/,$/, '');
 
     try {
@@ -202,28 +219,38 @@ function cleanAndParseJSON(text: string): any[] {
         results.push(parsed);
       }
     } catch (e) {
-      // Linha inválida, ignora
+      // Ignora linhas inválidas
     }
   }
 
   if (results.length > 0) return restoreUrls(results, urlMap);
 
-  // Estratégia C: Regex Fallback (Último recurso para extrair objetos em texto sujo)
-  const regex = /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})/g;
+  // Estratégia C: Regex Fallback (Último recurso para extrair objetos JSON válidos de texto sujo)
+  // Regex melhorada para capturar objetos aninhados
+  const regex = /\{[\s\S]*?\}(?=\s*(?:,|$|\]))/g; 
   let match;
-  while ((match = regex.exec(cleaned)) !== null) {
-    const jsonStr = match[0];
-    try {
-      const fixedJsonStr = jsonStr.replace(/'/g, '"');
-      const parsed = JSON.parse(fixedJsonStr);
-      results.push(parsed);
-    } catch (err) {
-      // Ignora fragmentos inválidos
-    }
-  }
+  // Tenta extrair objetos individuais que pareçam JSON
+  try {
+      // Combina chaves balenceadas (simples)
+      const objectRegex = /\{(?:[^{}]|(?:\{[^{}]*\}))*\}/g;
+      while ((match = objectRegex.exec(cleaned)) !== null) {
+        const jsonStr = match[0];
+        try {
+          const parsed = JSON.parse(jsonStr);
+          results.push(parsed);
+        } catch (err) {
+           // Tenta limpar vírgulas trailing dentro do objeto extraído
+           try {
+               const fixed = jsonStr.replace(/,\s*}/g, '}');
+               const parsed = JSON.parse(fixed);
+               results.push(parsed);
+           } catch(e2) {}
+        }
+      }
+  } catch(e) {}
 
   if (results.length === 0 && text.length > 50) {
-    console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto (início):", text.substring(0, 200) + "...");
+    console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto (início):", text.substring(0, 500));
   }
 
   return restoreUrls(results, urlMap);
