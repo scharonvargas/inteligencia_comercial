@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 
 import { VariableSizeList as List } from 'react-window';
-import { LocationModal } from './LocationModal';
+// import { LocationModal } from './LocationModal'; // Removed: Defined inline
 
 // --- Leaflet Icon Fix ---
 delete (L.Icon.Default.prototype as any)._getIconUrl;
