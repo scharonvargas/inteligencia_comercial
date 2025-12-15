@@ -674,8 +674,12 @@ export const fetchAndAnalyzeBusinesses = async (
       data: allEntities
     });
 
-    // Save to IndexedDB for persistence
-    indexedDBCache.set(cacheKey, allEntities, telemetry.exactCount, telemetry.nearbyCount);
+    // Save to IndexedDB for persistence (async, don't block)
+    try {
+      indexedDBCache.set(cacheKey, allEntities, telemetry.exactCount, telemetry.nearbyCount);
+    } catch (e) {
+      console.warn('IndexedDB save failed:', e);
+    }
 
     // Log telemetry
     console.log(`📊 Telemetry: ${telemetry.exactCount} EXACT, ${telemetry.nearbyCount} NEARBY (${((telemetry.exactCount / allEntities.length) * 100).toFixed(1)}% precisão)`);
