@@ -145,6 +145,12 @@ function restoreUrls(data: any, map: Map<string, string>): any {
     return data.map((item) => restoreUrls(item, map));
   }
   if (typeof data === "object" && data !== null) {
+    // UNWRAPPING LOGIC: Se o objeto for apenas um wrapper para um array (ex: { BusinessEntities: [...] })
+    const keys = Object.keys(data);
+    if (keys.length === 1 && Array.isArray(data[keys[0]])) {
+      return data[keys[0]].map((item: any) => restoreUrls(item, map));
+    }
+
     const newObj: any = {};
     for (const key in data) {
       newObj[key] = restoreUrls(data[key], map);
@@ -224,7 +230,19 @@ function cleanAndParseJSON(text: string): any[] {
         .replace(/'/g, '"'); // single quotes
 
       const parsed = JSON.parse(fixed);
-      return restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
+      const restored = restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
+
+      // Check if restored is an array or object containing array (unwrapping)
+      if (Array.isArray(restored)) return restored;
+      if (typeof restored === 'object' && restored !== null) {
+        // Additional safety: if restoreUrls returned object, check if it was wrapped
+        const keys = Object.keys(restored);
+        if (keys.length === 1 && Array.isArray(restored[keys[0]])) {
+          return restored[keys[0]];
+        }
+        return [restored];
+      }
+      return [restored];
     } catch (e) {
       // Falha no brute force, tenta regex
     }
@@ -445,11 +463,10 @@ interface NominatimResult {
 async function fetchFromNominatim(query: string): Promise<NominatimResult[]> {
   try {
     const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=30&addressdetails=1`;
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'VeriCorp/1.0 (Integration Test)'
-      }
-    });
+    // Browser enforces CORS; removing custom User-Agent to avoid preflight issues
+    // Nominatim usage policy requires a valid User-Agent, but in browser context we can't easily force it without Proxy.
+    // However, widely used apps often just fetch. Let's try without the header or standard headers.
+    const response = await fetch(url);
     if (!response.ok) return [];
     return await response.json();
   } catch (e) {
