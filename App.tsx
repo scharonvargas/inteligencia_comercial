@@ -26,6 +26,7 @@ const STORAGE_KEYS = {
 };
 
 const App: React.FC = () => {
+  console.log("🚀 [VeriCorp Production Build v22.1 - JSON STRICT ENABLED]");
   const { user, loading: authLoading, signOut } = useAuth();
 
   // Inicializa estados buscando do localStorage se existir

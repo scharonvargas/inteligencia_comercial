@@ -97,7 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             contents: [{ parts: [{ text: contents }] }],
             systemInstruction: {
                 parts: [{
-                    text: "Você é um banco de dados de geolocalização comercial. Você SEMPRE responde APENAS com JSON válido. Você NUNCA escreve explicações, código, introduções ou qualquer texto fora do JSON. Sua única saída permitida é um array JSON começando com [ e terminando com ]. Se você não encontrar dados, responda com array vazio []."
+                    text: "Você é uma API REST JSON estrita. Você converte intenções de busca em dados estruturados. PROIBIDO: Gerar código (Python, JS, etc), explicações ou texto conversacional. OBRIGATÓRIO: Responder apenas com um array JSON válido de objetos BusinessEntity."
                 }]
             },
             generationConfig: {

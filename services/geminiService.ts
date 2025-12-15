@@ -303,7 +303,7 @@ async function callGeminiDirect(
       contents: [{ parts: [{ text: prompt }] }],
       systemInstruction: {
         parts: [{
-          text: "Você é um banco de dados de geolocalização comercial. Você SEMPRE responde APENAS com JSON válido. Você NUNCA escreve explicações, código, introduções ou qualquer texto fora do JSON. Sua única saída permitida é um array JSON começando com [ e terminando com ]. Se você não encontrar dados, responda com array vazio []."
+          text: "Você é uma API REST JSON estrita. Você converte intenções de busca em dados estruturados. PROIBIDO: Gerar código (Python, JS, etc), explicações ou texto conversacional. OBRIGATÓRIO: Responder apenas com um array JSON válido de objetos BusinessEntity."
         }]
       },
       generationConfig: { temperature: isBroadSearch ? 0.65 : 0.4 },
@@ -499,12 +499,12 @@ export const fetchAndAnalyzeBusinesses = async (
     segment === "Varredura Geral (Multisetorial)" || segment === "";
 
   onProgress(
-    `Inicializando ${
-      isBroadSearch ? "varredura geográfica" : "busca segmentada"
+    `Inicializando ${isBroadSearch ? "varredura geográfica" : "busca segmentada"
     }...`
   );
 
   const modelId = "gemini-2.5-flash";
+  console.log("🔍 [VeriCorp v22.1] Iniciando busca com prompt reforçado (JSON Only)...");
 
   while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
@@ -533,10 +533,9 @@ export const fetchAndAnalyzeBusinesses = async (
       promptTask = `
         1. CONTEXTO: VARREDURA GERAL DE INFRAESTRUTURA (Multisetorial).
         LOCALIZAÇÃO ALVO: "${region}".
-        ${
-          coordinates
-            ? `📍 PONTO DE ANCORAGEM (GPS PRECISO): Lat ${coordinates.lat}, Lng ${coordinates.lng}.`
-            : ""
+        ${coordinates
+          ? `📍 PONTO DE ANCORAGEM (GPS PRECISO): Lat ${coordinates.lat}, Lng ${coordinates.lng}.`
+          : ""
         }
 
         2. ANÁLISE DE LOCALIZAÇÃO E PRECISÃO (CRÍTICO):
@@ -584,38 +583,72 @@ export const fetchAndAnalyzeBusinesses = async (
     }
 
     // Definindo estrutura JSON explícita no prompt
+    // Prompt com Few-Shot Learning para garantir JSON
     const prompt = `
-Você é um banco de dados de empresas. Responda APENAS com JSON válido.
-NÃO escreva explicações, código, introduções ou qualquer texto fora do JSON.
-Sua única saída permitida é um array JSON começando com [ e terminando com ].
+Tarefa: Atuar como API REST que converte intenção de busca em JSON estruturado de empresas reais.
+Modelo: Gemini 2.5 Flash (JSON Mode STRICT)
 
-TAREFA: ${promptTask}
-Encontre ${currentBatchSize} empresas REAIS e EXISTENTES.
+Contexto: O usuário busca "${segment}" na região "${region}".
+Meta: Listar ${currentBatchSize} resultados.
 
-EXCLUSÃO: Não repita: [${exclusionList}].
+Exemplos de Comportamento Correto (Few-Shot):
 
-FORMATO OBRIGATÓRIO (responda SOMENTE isto, nada mais):
+[INPUT]
+Buscar: Padarias em Centro, Florianópolis
+[OUTPUT CORRETO]
 [
   {
-    "name": "Nome Real da Empresa",
-    "address": "Endereço completo real",
-    "phone": "Telefone ou null",
-    "website": "URL ou null",
+    "name": "Padaria Pão & Cia",
+    "address": "Rua Felipe Schmidt, 100, Centro, Florianópolis - SC",
+    "phone": "(48) 3222-0000",
+    "website": "http://paoecia.com.br",
     "socialLinks": [],
-    "lastActivityEvidence": "Evidência de atividade recente",
+    "lastActivityEvidence": "Review recente no Google Maps (2 dias atrás).",
     "daysSinceLastActivity": 2,
-    "trustScore": 85,
+    "trustScore": 95,
     "status": "Ativo",
-    "category": "Categoria",
+    "category": "Padaria",
     "matchType": "EXACT",
-    "lat": -23.55,
-    "lng": -46.63
+    "lat": -27.595,
+    "lng": -48.548
   }
 ]
 
-REGRAS:
-- matchType: "EXACT" se no local exato, "NEARBY" se próximo
-- Responda APENAS o JSON, sem markdown, sem explicações
+[INPUT]
+Buscar: Oficinas em Palhoça
+[OUTPUT CORRETO]
+[
+  {
+    "name": "Mecânica Total",
+    "address": "Av. Barão do Rio Branco, 50, Palhoça - SC",
+    "phone": "(48) 3333-1111",
+    "website": null,
+    "socialLinks": ["https://instagram.com/mecanicatotal"],
+    "lastActivityEvidence": "Postagem no Instagram hoje.",
+    "daysSinceLastActivity": 0,
+    "trustScore": 88,
+    "status": "Ativo",
+    "category": "Oficina Mecânica",
+    "matchType": "EXACT",
+    "lat": -27.645,
+    "lng": -48.670
+  }
+]
+
+---
+INSTRUÇÃO DE PROIBIÇÃO CRÍTICA:
+1. JAMAIS gere código Python, JavaScript ou qualquer linguagem de programação.
+2. JAMAIS escreva "Aqui está o código" ou "Segue a lista".
+3. Sua resposta deve ser APENAS o JSON puro. Se falhar, retorne [].
+
+---
+AGORA É SUA VEZ. EXECUTE A TAREFA REAL:
+
+INPUT REAL:
+Buscar: ${promptTask}
+Exclusões: ${exclusionList}
+
+OUTPUT JSON (APENAS ARRAY):
 `;
 
     try {
