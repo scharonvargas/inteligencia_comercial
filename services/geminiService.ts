@@ -163,44 +163,76 @@ function restoreUrls(data: any, map: Map<string, string>): any {
 /**
  * Analisa e limpa JSON proveniente da IA com alta robustez.
  */
+// Helper para extração robusta de JSON usando pilha (Stack-Based)
+function extractJSON(str: string): any {
+  let firstOpen = str.indexOf('{');
+  let firstArray = str.indexOf('[');
+
+  // Se não achar nenhum, retorna null
+  if (firstOpen === -1 && firstArray === -1) return null;
+
+  // Decide quem vem primeiro
+  let startIndices = [firstOpen, firstArray].filter(i => i !== -1).sort((a, b) => a - b);
+
+  for (let start of startIndices) {
+    let stack = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = start; i < str.length; i++) {
+      const char = str[i];
+
+      if (escape) { escape = false; continue; }
+      if (char === '\\') { escape = true; continue; }
+      if (char === '"') { inString = !inString; continue; }
+      if (inString) continue;
+
+      if (char === '{' || char === '[') stack++;
+      if (char === '}' || char === ']') {
+        stack--;
+        if (stack === 0) {
+          // Potencial fim do JSON
+          const candidate = str.substring(start, i + 1);
+          try {
+            // Limpeza básica antes de parsear
+            const fixed = candidate
+              .replace(/,\s*([\]}])/g, "$1") // trailing commas
+              .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":') // unquoted keys
+              .replace(/'/g, '"'); // single quotes
+            return JSON.parse(fixed);
+          } catch (e) {
+            // Continue searching if this block was invalid
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function cleanAndParseJSON(text: string): any[] {
   if (!text || text.trim().length === 0) return [];
 
-  // EARLY DETECTION: Se a resposta claramente não é JSON
+  // EARLY DETECTION
   const trimmedStart = text.trim().substring(0, 200).toLowerCase();
-  const invalidPatterns = [
-    /^(aqui est[áa]|here is|para |to find|vou |i will)/i,
-    /^```python/i,
-    /^import\s+/i,
-    /^def\s+\w+\s*\(/i,
-    /^class\s+\w+/i,
-    /^from\s+\w+\s+import/i,
-  ];
-
-  if (invalidPatterns.some((pattern) => pattern.test(trimmedStart))) {
-    console.warn("🚫 Resposta detectada como código/narrativa inválida.");
+  if (/^(aqui est|here is|para |to find|vou |i will)/i.test(trimmedStart) && !/[\[\{]/.test(trimmedStart)) {
+    console.warn("🚫 Resposta detectada como narrativa sem JSON.");
     return [];
   }
 
   let cleaned = text;
 
-  // 1. Remove Markdown Code Blocks
+  // 1. Remove Markdown
   const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (codeBlockMatch) {
-    cleaned = codeBlockMatch[1];
-  }
+  if (codeBlockMatch) cleaned = codeBlockMatch[1];
 
   // 2. Remove Comentários
   cleaned = cleaned.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  // 3. Remove Citações [1]
-  cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, "");
-
-  // 4. URL placeholders (preserve URLs)
+  // 3. URL placeholders
   const urlMap = new Map<string, string>();
   let urlCounter = 0;
   const urlRegex = /((?:https?:\/\/(?:www\.)?|(?:www\.))[^\s"'{}\],]+)/gi;
-
   cleaned = cleaned.replace(urlRegex, (match) => {
     let url = match;
     const trailing = url.match(/[),;\]}]+$/);
@@ -215,61 +247,30 @@ function cleanAndParseJSON(text: string): any[] {
     return token + suffix;
   });
 
-  // 5. BRUTE FORCE ARRAY EXTRACTION (The "Sausage" Method)
-  // Encontra o primeiro '[' e o último ']'
-  const firstOpen = cleaned.indexOf('[');
-  const lastClose = cleaned.lastIndexOf(']');
+  // 4. STACK-BASED EXTRACTION (Robust)
+  const parsed = extractJSON(cleaned);
 
-  if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-    const candidate = cleaned.substring(firstOpen, lastClose + 1);
-    try {
-      // Tenta parse do array extraído
-      const fixed = candidate
-        .replace(/,\s*([\]}])/g, "$1") // trailing commas
-        .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":') // unquoted keys
-        .replace(/'/g, '"'); // single quotes
+  if (parsed) {
+    // 5. UNWRAPPING & RESTORE
+    const restored = restoreUrls(parsed, urlMap);
 
-      const parsed = JSON.parse(fixed);
-      const restored = restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
+    if (Array.isArray(restored)) return restored;
 
-      // Check if restored is an array or object containing array (unwrapping)
-      if (Array.isArray(restored)) return restored;
-      if (typeof restored === 'object' && restored !== null) {
-        // Additional safety: if restoreUrls returned object, check if it was wrapped
-        const keys = Object.keys(restored);
-        if (keys.length === 1 && Array.isArray(restored[keys[0]])) {
-          return restored[keys[0]];
+    if (typeof restored === 'object' && restored !== null) {
+      const keys = Object.keys(restored);
+      // Caso { "BusinessEntities": [...] }
+      for (const key of keys) {
+        if (Array.isArray(restored[key]) && restored[key].length > 0) {
+          return restoreUrls(restored[key], urlMap);
         }
-        return [restored];
       }
+      // Caso objeto único
       return [restored];
-    } catch (e) {
-      // Falha no brute force, tenta regex
     }
   }
 
-  // 6. Regex Fallback (Objeto por Objeto)
-  const results: any[] = [];
-  const objectRegex = /\{(?:[^{}]|(?:\{[^{}]*\}))*\}/g;
-  let match;
-  while ((match = objectRegex.exec(cleaned)) !== null) {
-    try {
-      const fixed = match[0]
-        .replace(/'/g, '"')
-        .replace(/,\s*}/g, "}")
-        .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
-
-      const parsed = JSON.parse(fixed);
-      const restored = restoreUrls(parsed, urlMap);
-      if (restored) results.push(restored);
-    } catch (e) { }
-  }
-
-  if (results.length === 0 && text.length > 50) {
-    console.warn("⚠️ Falha total no parse JSON. Raw:", text.substring(0, 200));
-  }
-
-  return results;
+  console.warn("⚠️ Falha total no parse JSON. Raw:", text.substring(0, 200));
+  return [];
 }
 
 /**
@@ -627,7 +628,15 @@ export const fetchAndAnalyzeBusinesses = async (
   const modelId = "gemini-2.5-flash";
   console.log("🔍 [VeriCorp v24.x] Iniciando busca (Fallback Mode)...");
 
+  // Strike Counter
+  let emptyStrikes = 0;
+
   while (allEntities.length < maxResults && attempts < maxLoops) {
+    if (emptyStrikes >= 2) {
+      console.warn("⚠️ Loop Breaker: 2 tentativas falhas consecutivas.");
+      onProgress("⚠️ Busca interrompida: IA não retornou mais dados válidos.");
+      break;
+    }
     attempts++;
 
     const isFirstBatch = allEntities.length === 0;
@@ -797,11 +806,16 @@ OUTPUT JSON (APENAS ARRAY):
       batchData = cleanAndParseJSON(rawText);
 
       if (!batchData || batchData.length === 0) {
-        onProgress("IA retornou dados fora do formato. Tentando novamente...");
+        emptyStrikes++;
+        onProgress(`IA retornou dados vazios (Strike ${emptyStrikes}/2). Tentando novamente...`);
         console.warn("Parse result was empty.");
         if (attempts >= maxLoops) break;
+        await wait(1000);
         continue;
       }
+
+      // Reset strike
+      emptyStrikes = 0;
 
       const batchEntities: BusinessEntity[] = [];
       let newCount = 0;
