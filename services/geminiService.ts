@@ -160,7 +160,7 @@ function restoreUrls(data: any, map: Map<string, string>): any {
 function cleanAndParseJSON(text: string): any[] {
   if (!text || text.trim().length === 0) return [];
 
-  // EARLY DETECTION: Se a resposta claramente não é JSON, retorna vazio
+  // EARLY DETECTION: Se a resposta claramente não é JSON
   const trimmedStart = text.trim().substring(0, 200).toLowerCase();
   const invalidPatterns = [
     /^(aqui est[áa]|here is|para |to find|vou |i will)/i,
@@ -172,35 +172,27 @@ function cleanAndParseJSON(text: string): any[] {
   ];
 
   if (invalidPatterns.some((pattern) => pattern.test(trimmedStart))) {
-    console.warn(
-      "🚫 Resposta detectada como código/narrativa, não JSON. Ignorando."
-    );
+    console.warn("🚫 Resposta detectada como código/narrativa inválida.");
     return [];
   }
 
   let cleaned = text;
 
-  // 1. Extrair conteúdo de blocos de código Markdown (prioridade)
+  // 1. Remove Markdown Code Blocks
   const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (codeBlockMatch) {
     cleaned = codeBlockMatch[1];
   }
 
-  // 2. Remover comentários JS (// ou /* */)
+  // 2. Remove Comentários
   cleaned = cleaned.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  // 3. Remover citações de grounding (ex: [1], [2]) que quebram JSON
-  // Cuidado para não remover arrays válidos. Removemos apenas se parecer citação isolada.
+  // 3. Remove Citações [1]
   cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, "");
 
-  // 4. Correção preliminar de URLs malformadas comuns em LLMs
-  cleaned = cleaned.replace(/(https?|ftp)\s*:\s*\/\/\s*/iy, "$1://");
-
-  // 5. Proteção de URLs (Extração e Tokenização)
+  // 4. URL placeholders (preserve URLs)
   const urlMap = new Map<string, string>();
   let urlCounter = 0;
-
-  // Regex aprimorada para capturar URLs
   const urlRegex = /((?:https?:\/\/(?:www\.)?|(?:www\.))[^\s"'{}\],]+)/gi;
 
   cleaned = cleaned.replace(urlRegex, (match) => {
@@ -212,56 +204,51 @@ function cleanAndParseJSON(text: string): any[] {
       url = url.slice(0, -trailing[0].length);
     }
     if (url.endsWith(".")) url = url.slice(0, -1);
-
     const token = `__URL_PLACEHOLDER_${urlCounter++}__`;
     urlMap.set(token, url);
     return token + suffix;
   });
 
-  // 6. Limpeza de Sintaxe JSON
-  cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
-  cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+  // 5. BRUTE FORCE ARRAY EXTRACTION (The "Sausage" Method)
+  // Encontra o primeiro '[' e o último ']'
+  const firstOpen = cleaned.indexOf('[');
+  const lastClose = cleaned.lastIndexOf(']');
 
-  // 7. Tentativa de Parse Direto (Melhor Cenário)
-  try {
-    const parsed = JSON.parse(cleaned);
-    const restored = restoreUrls(
-      Array.isArray(parsed) ? parsed : [parsed],
-      urlMap
-    );
-    return restored;
-  } catch (e) {
-    // Falha silenciosa
-  }
-
-  // 8. Estratégia de Extração de Múltiplos Objetos/Arrays (Fallback)
-  const results: any[] = [];
-  const objectOrArrayRegex =
-    /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})|(\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\])/g;
-
-  let match;
-  while ((match = objectOrArrayRegex.exec(cleaned)) !== null) {
-    const jsonStr = match[0];
+  if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+    const candidate = cleaned.substring(firstOpen, lastClose + 1);
     try {
-      const fixedJsonStr = jsonStr.replace(/'/g, '"');
-      const parsed = JSON.parse(fixedJsonStr);
-      const restored = restoreUrls(parsed, urlMap);
+      // Tenta parse do array extraído
+      const fixed = candidate
+        .replace(/,\s*([\]}])/g, "$1") // trailing commas
+        .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":') // unquoted keys
+        .replace(/'/g, '"'); // single quotes
 
-      if (Array.isArray(restored)) {
-        results.push(...restored);
-      } else if (typeof restored === "object" && restored !== null) {
-        results.push(restored);
-      }
-    } catch (err) {
-      // Ignora fragmentos inválidos
+      const parsed = JSON.parse(fixed);
+      return restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
+    } catch (e) {
+      // Falha no brute force, tenta regex
     }
   }
 
+  // 6. Regex Fallback (Objeto por Objeto)
+  const results: any[] = [];
+  const objectRegex = /\{(?:[^{}]|(?:\{[^{}]*\}))*\}/g;
+  let match;
+  while ((match = objectRegex.exec(cleaned)) !== null) {
+    try {
+      const fixed = match[0]
+        .replace(/'/g, '"')
+        .replace(/,\s*}/g, "}")
+        .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+
+      const parsed = JSON.parse(fixed);
+      const restored = restoreUrls(parsed, urlMap);
+      if (restored) results.push(restored);
+    } catch (e) { }
+  }
+
   if (results.length === 0 && text.length > 50) {
-    console.warn(
-      "⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:",
-      text.substring(0, 500) + "..."
-    );
+    console.warn("⚠️ Falha total no parse JSON. Raw:", text.substring(0, 200));
   }
 
   return results;
