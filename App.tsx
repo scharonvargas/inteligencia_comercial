@@ -351,6 +351,7 @@ const App: React.FC = () => {
                   className="w-full bg-transparent border-none text-white focus:ring-0 h-12 pl-10 pr-8 appearance-none cursor-pointer text-base"
                   disabled={isLoading}
                 >
+                  <option value={10} className="bg-slate-900">10 leads</option>
                   <option value={20} className="bg-slate-900">20 leads</option>
                   <option value={50} className="bg-slate-900">50 leads</option>
                   <option value={80} className="bg-slate-900">80 leads</option>
