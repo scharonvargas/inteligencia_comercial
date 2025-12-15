@@ -330,7 +330,10 @@ async function callGeminiDirect(
   }
 
   const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  if (data.provider) {
+    console.log(`📡 [Provider] ${data.provider} Active`);
+  }
+  const text = data?.text || data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   return { text, candidates: data.candidates };
 }
 
