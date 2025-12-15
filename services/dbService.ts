@@ -3,8 +3,9 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { BusinessEntity, BusinessStatus } from "../types";
 
 // Credenciais fornecidas diretamente para garantir conexão
-const supabaseUrl = process.env.SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY;
+// Credenciais via variáveis de ambiente (Vite)
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 let supabase: SupabaseClient | null = null;
 
@@ -17,7 +18,7 @@ if (supabaseUrl && supabaseKey) {
     console.error("Erro ao inicializar Supabase:", error);
   }
 } else {
-  console.warn("Supabase credentials not found. Using local storage fallback.");
+  console.warn("Supabase credentials not found. Ensure VITE_SUPABASE_URL and VITE_SUPABASE_KEY are set in .env.");
 }
 
 // --- Fallback Functions (LocalStorage) ---

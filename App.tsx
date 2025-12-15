@@ -84,7 +84,7 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEYS.WEBHOOK_URL, url);
   }, []);
 
-  const hasKey = !!process.env.API_KEY;
+  const hasKey = !!import.meta.env.VITE_API_KEY;
   const isSweepMode = segment.trim() === '';
 
   // Verificar conexão com BD ao iniciar
@@ -157,7 +157,7 @@ const App: React.FC = () => {
       const searchSegment = isSweepMode ? "Varredura Geral (Multisetorial)" : segment;
 
       // STREAMING: Passamos um callback extra para receber lotes de dados
-      await fetchAndAnalyzeBusinesses(
+      const finalResults = await fetchAndAnalyzeBusinesses(
         searchSegment,
         region,
         maxResults,
@@ -169,6 +169,9 @@ const App: React.FC = () => {
         searchCoords, // Passamos as coordenadas opcionais
         controller.signal // Passamos o sinal de aborto
       );
+
+       // Atualiza com o resultado final completo para garantir consistência e evitar problemas de closure/stale state
+      setResults(finalResults);
 
       // Nota: fetchAndAnalyzeBusinesses retorna o array completo no final, 
       // mas já fomos atualizando o estado via callback, então não precisamos setar de novo aqui
