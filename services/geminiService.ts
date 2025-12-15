@@ -1,5 +1,6 @@
 import { BusinessEntity, BusinessStatus } from "../types";
 import { dbService } from "./dbService";
+import { indexedDBCache } from "./indexedDBCache";
 
 // --- Configuração de Cache Granular ---
 
@@ -293,9 +294,28 @@ async function generateContentWithRetry(
       console.warn(`Mensagem: ${errorMessage}`);
       console.groupEnd();
 
+      // Fatal errors - don't retry
       const isFatal = errorMessage.includes('API_KEY') || status === 400 || status === 401;
-
       if (isFatal) throw error;
+
+      // 503 Overload - longer wait + user-friendly message
+      if (status === 503 || errorMessage.includes('overloaded')) {
+        console.warn("🔄 Modelo sobrecarregado (503). Aguardando 8s antes de retry...");
+        if (attempt >= maxRetries) {
+          throw new Error("⏳ A IA está sobrecarregada. Tente novamente em alguns minutos ou use uma busca menor.");
+        }
+        await wait(8000); // Wait 8 seconds for 503
+        continue;
+      }
+
+      // 429 Rate Limit - exponential backoff
+      if (status === 429) {
+        const rateLimitDelay = Math.min(5000 * attempt, 30000);
+        console.warn(`⏱️ Rate limit (429). Aguardando ${rateLimitDelay / 1000}s...`);
+        await wait(rateLimitDelay);
+        continue;
+      }
+
       if (attempt >= maxRetries) throw error;
 
       const delay = Math.min(BASE_DELAY * Math.pow(2, attempt - 1), MAX_DELAY);
@@ -317,6 +337,20 @@ export const fetchAndAnalyzeBusinesses = async (
 
   const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
 
+  // 1. Check IndexedDB Persistent Cache First
+  try {
+    const persistentCache = await indexedDBCache.get(cacheKey);
+    if (persistentCache) {
+      onProgress(`⚡ Cache persistente encontrado! ${persistentCache.data.length} resultados (${persistentCache.exactCount} exatos)`);
+      await wait(50);
+      onBatchResults(persistentCache.data as BusinessEntity[]);
+      return persistentCache.data as BusinessEntity[];
+    }
+  } catch (e) {
+    console.warn("IndexedDB cache check failed:", e);
+  }
+
+  // 2. Check Memory Cache (faster but ephemeral)
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
     if (Date.now() - entry.timestamp < entry.ttl) {
@@ -329,6 +363,9 @@ export const fetchAndAnalyzeBusinesses = async (
       searchCache.delete(cacheKey);
     }
   }
+
+  // Telemetry counters
+  let telemetry = { exactCount: 0, nearbyCount: 0, parseErrors: 0 };
 
   onProgress("Sincronizando banco de dados de prospects...");
   let existingProspectsMap = new Set<string>();
@@ -552,6 +589,10 @@ export const fetchAndAnalyzeBusinesses = async (
           };
 
           batchEntities.push(entity);
+
+          // Telemetry tracking
+          if (finalMatchType === 'EXACT') telemetry.exactCount++;
+          else telemetry.nearbyCount++;
         }
       }
 
@@ -591,6 +632,12 @@ export const fetchAndAnalyzeBusinesses = async (
       ttl: currentTTL,
       data: allEntities
     });
+
+    // Save to IndexedDB for persistence
+    indexedDBCache.set(cacheKey, allEntities, telemetry.exactCount, telemetry.nearbyCount);
+
+    // Log telemetry
+    console.log(`📊 Telemetry: ${telemetry.exactCount} EXACT, ${telemetry.nearbyCount} NEARBY (${((telemetry.exactCount / allEntities.length) * 100).toFixed(1)}% precisão)`);
   }
 
   return allEntities;
