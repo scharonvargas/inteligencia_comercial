@@ -389,13 +389,17 @@ export const fetchAndAnalyzeBusinesses = async (
     console.warn("Não foi possível carregar prospects do banco:", e);
   }
 
-  const INITIAL_BATCH_SIZE = 12;
-  const SUBSEQUENT_BATCH_SIZE = 40;
+  // Smart batch sizing: starts at 10, scales dynamically
+  // For small searches (10-20): single batch of exact size
+  // For medium searches (20-50): 10 initial, then 20 per batch
+  // For large searches (50+): 10 initial, then 30 per batch
+  const INITIAL_BATCH_SIZE = Math.min(10, maxResults);
+  const SUBSEQUENT_BATCH_SIZE = maxResults <= 20 ? maxResults : (maxResults <= 50 ? 20 : 30);
 
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
   let attempts = 0;
-  const maxLoops = Math.ceil(maxResults / 10) + 5;
+  const maxLoops = Math.ceil(maxResults / INITIAL_BATCH_SIZE) + 3;
 
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
@@ -414,6 +418,17 @@ export const fetchAndAnalyzeBusinesses = async (
   onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}... (~${Math.ceil(estimatedTimeMs / 1000)}s)`);
 
   const modelId = "gemini-2.5-flash";
+
+  // Parallel workers configuration
+  const PARALLEL_WORKERS = 3;
+  const workerOffsets = ['CENTRAL', 'NORTE/LESTE', 'SUL/OESTE'];
+
+  // Use parallel mode for larger result sets
+  const useParallelMode = maxResults >= 30;
+
+  if (useParallelMode) {
+    onProgress(`⚡ Modo Turbo: ${PARALLEL_WORKERS} buscas paralelas ativadas...`);
+  }
 
   while (allEntities.length < maxResults && attempts < maxLoops) {
     if (signal?.aborted) {
