@@ -442,6 +442,35 @@ async function generateContentWithRetry(
   }
 }
 
+// --- NOMINATIM SERVICE (OSM) ---
+interface NominatimResult {
+  place_id: number;
+  licence: string;
+  osm_type: string;
+  osm_id: number;
+  lat: string;
+  lon: string;
+  display_name: string;
+  type: string;
+  importance: number;
+}
+
+async function fetchFromNominatim(query: string): Promise<NominatimResult[]> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=30&addressdetails=1`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'VeriCorp/1.0 (Integration Test)'
+      }
+    });
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (e) {
+    console.warn("Nominatim fetch failed:", e);
+    return [];
+  }
+}
+
 export const fetchAndAnalyzeBusinesses = async (
   segment: string,
   region: string,
@@ -490,24 +519,109 @@ export const fetchAndAnalyzeBusinesses = async (
     console.warn("Não foi possível carregar prospects do banco:", e);
   }
 
-  const INITIAL_BATCH_SIZE = 5;
-  const SUBSEQUENT_BATCH_SIZE = 25;
-
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
+
+  // --- HYBRID STRATEGY: OSM + AI ---
+  onProgress("🗺️ Consultando OpenStreetMap (Dados Reais)...");
+
+  let osmResults: NominatimResult[] = [];
+  try {
+    osmResults = await fetchFromNominatim(`${segment} in ${region}`);
+    if (osmResults.length > 0) {
+      onProgress(`✅ OSM encontrou ${osmResults.length} locais reais. Enriquecendo com IA...`);
+    } else {
+      onProgress("⚠️ OSM sem resultados diretos. Ativando busca profunda via IA...");
+    }
+  } catch (e) {
+    console.warn("Erro no OSM, fallback para IA pura.");
+  }
+
+  // Se OSM retornou dados, usamos a IA para formatar/enriquecer esses dados REAIS
+  if (osmResults.length > 0) {
+    const modelId = "gemini-2.5-flash";
+
+    const osmContext = JSON.stringify(osmResults.map(r => ({
+      name: r.display_name.split(',')[0],
+      full_address: r.display_name,
+      lat: r.lat,
+      lon: r.lon,
+      type: r.type
+    })).slice(0, maxResults));
+
+    const enrichmentPrompt = `
+      Tarefa: Converter dados brutos do OpenStreetMap em BusinessEntity JSON.
+      Contexto: O usuário buscou "${segment}" em "${region}".
+      
+      DADOS BRUTOS (OSM):
+      ${osmContext}
+
+      Instruções:
+      1. Use APENAS os dados fornecidos. Não invente empresas.
+      2. Formate telefone como null se não houver (OSM raramente tem telefone).
+      3. Infira a categoria correta baseada no nome/tipo.
+      4. Status sempre "Ativo" pois consta no mapa.
+      5. matchType = "EXACT" (pois vem de geocoding real).
+      
+      Output JSON (Array de BusinessEntity):
+      `;
+
+    try {
+      const response = await generateContentWithRetry(modelId, enrichmentPrompt, false);
+
+      // ... (Lógica de Parsing existente reutilizada abaixo ou duplicada para segurança) ...
+      const rawText = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+      const batchData = cleanAndParseJSON(rawText);
+
+      const enrichedEntities: BusinessEntity[] = batchData.map((item: any, index: number) => ({
+        id: `biz-osm-${Date.now()}-${index}`,
+        name: item.name,
+        address: item.address || "Endereço extraído do OSM",
+        phone: item.phone || null,
+        website: null,
+        socialLinks: [],
+        lastActivityEvidence: "Validação via OpenStreetMap",
+        daysSinceLastActivity: 0,
+        trustScore: 90,
+        status: BusinessStatus.ACTIVE,
+        category: item.category || segment,
+        lat: parseFloat(item.lat || "0"),
+        lng: parseFloat(item.lng || "0"),
+        isProspect: false,
+        pipelineStage: 'new',
+        matchType: 'EXACT'
+      }));
+
+      allEntities.push(...enrichedEntities);
+      onBatchResults(enrichedEntities);
+
+      // Salva no cache e retorna (Short Circuit: Se o OSM achou, confiamos nele)
+      searchCache.set(cacheKey, {
+        timestamp: Date.now(),
+        ttl: TTL_CONFIG.PRECISE,
+        data: allEntities,
+      });
+
+      return allEntities;
+
+    } catch (err) {
+      console.error("Erro no enriquecimento OSM:", err);
+      onProgress("⚠️ Falha ao processar dados do mapa. Tentando método tradicional...");
+      // Fallback continua abaixo
+    }
+  }
+
+  // --- FALLBACK: LOGICA ORIGINAL (IA PURA) ---
+  // Se OSM falhou ou retornou vazio, executamos o loop original da IA
+
+  const INITIAL_BATCH_SIZE = 5;
+  const SUBSEQUENT_BATCH_SIZE = 25;
   let attempts = 0;
   const maxLoops = Math.ceil(maxResults / 10) + 5;
-
-  const isBroadSearch =
-    segment === "Varredura Geral (Multisetorial)" || segment === "";
-
-  onProgress(
-    `Inicializando ${isBroadSearch ? "varredura geográfica" : "busca segmentada"
-    }...`
-  );
+  const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
   const modelId = "gemini-2.5-flash";
-  console.log("🔍 [VeriCorp v24.x] Iniciando busca com prompt reforçado (JSON Only)...");
+  console.log("🔍 [VeriCorp v24.x] Iniciando busca (Fallback Mode)...");
 
   while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
