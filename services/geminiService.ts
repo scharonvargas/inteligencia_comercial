@@ -220,6 +220,19 @@ function cleanAndParseJSON(text: string): any[] {
     return [];
   }
 
+  // Handle explicit error messages from AI as empty results to trigger graceful exit/retry logic
+  if (text.includes('"error":')) {
+    try {
+      const potentialError = JSON.parse(text);
+      if (potentialError.error) {
+        console.warn("🚫 AI returned an explicit error object:", potentialError.error);
+        return [];
+      }
+    } catch (e) {
+      // If parse fails, it might still be a valid mixed content, so we proceed to extraction
+    }
+  }
+
   let cleaned = text;
 
   // 1. Remove Markdown
@@ -810,7 +823,7 @@ OUTPUT JSON (APENAS ARRAY):
         onProgress(`IA retornou dados vazios (Strike ${emptyStrikes}/2). Tentando novamente...`);
         console.warn("Parse result was empty.");
         if (attempts >= maxLoops) break;
-        await wait(1000);
+        await wait(2000); // Backoff Aumentado per strike
         continue;
       }
 
