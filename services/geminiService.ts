@@ -6,8 +6,8 @@ import { dbService } from "./dbService";
 
 const TTL_CONFIG = {
   BROAD_SWEEP: 120 * 60 * 1000, // 2 horas: Varreduras gerais (infraestrutura muda pouco)
-  DEFAULT: 30 * 60 * 1000,      // 30 minutos: Buscas segmentadas padrão
-  PRECISE: 15 * 60 * 1000       // 15 minutos: Buscas exatas/GPS (permite retry mais rápido)
+  DEFAULT: 30 * 60 * 1000, // 30 minutos: Buscas segmentadas padrão
+  PRECISE: 15 * 60 * 1000, // 15 minutos: Buscas exatas/GPS (permite retry mais rápido)
 };
 
 interface CacheEntry {
@@ -27,7 +27,7 @@ const pruneCache = () => {
   let deletedCount = 0;
 
   for (const [key, entry] of searchCache.entries()) {
-    const isExpired = (now - entry.timestamp) > entry.ttl;
+    const isExpired = now - entry.timestamp > entry.ttl;
     if (isExpired) {
       searchCache.delete(key);
       deletedCount++;
@@ -60,14 +60,20 @@ export const invalidateSpecificCache = (term: string) => {
       count++;
     }
   }
-  if (count > 0) console.log(`🧹 Invalidadas ${count} entradas de cache contendo "${term}".`);
+  if (count > 0)
+    console.log(
+      `🧹 Invalidadas ${count} entradas de cache contendo "${term}".`
+    );
 };
 
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function getWhatsAppUrl(phone: string | null, companyName: string): string | null {
+function getWhatsAppUrl(
+  phone: string | null,
+  companyName: string
+): string | null {
   if (!phone) return null;
-  const cleanPhone = phone.replace(/\D/g, '');
+  const cleanPhone = phone.replace(/\D/g, "");
   if (cleanPhone.length < 10) return null;
   let finalNumber = cleanPhone;
   if (cleanPhone.length >= 10 && cleanPhone.length <= 11) {
@@ -81,9 +87,12 @@ function getWhatsAppUrl(phone: string | null, companyName: string): string | nul
  * Função auxiliar para refinar métricas de atividade baseadas em texto vago.
  * Tenta extrair dias numéricos de evidências textuais se o número explícito falhar.
  */
-function refineActivityMetrics(evidence: string | null, explicitDays: number | any): { text: string, days: number } {
+function refineActivityMetrics(
+  evidence: string | null,
+  explicitDays: number | any
+): { text: string; days: number } {
   let text = evidence?.trim() || "Sem dados recentes";
-  let days = typeof explicitDays === 'number' ? explicitDays : -1;
+  let days = typeof explicitDays === "number" ? explicitDays : -1;
 
   // Se já temos um número válido (incluindo 0 para hoje), confiamos nele
   if (days >= 0) return { text, days };
@@ -94,13 +103,24 @@ function refineActivityMetrics(evidence: string | null, explicitDays: number | a
   const daysMatch = lowerText.match(/(\d+)\s*(?:dias?|days?)/);
   if (daysMatch) {
     days = parseInt(daysMatch[1], 10);
-  } else if (lowerText.includes("hoje") || lowerText.includes("today") || lowerText.includes("agora") || lowerText.includes("minutos")) {
+  } else if (
+    lowerText.includes("hoje") ||
+    lowerText.includes("today") ||
+    lowerText.includes("agora") ||
+    lowerText.includes("minutos")
+  ) {
     days = 0;
   } else if (lowerText.includes("ontem") || lowerText.includes("yesterday")) {
     days = 1;
-  } else if (lowerText.includes("semana passada") || lowerText.includes("last week")) {
+  } else if (
+    lowerText.includes("semana passada") ||
+    lowerText.includes("last week")
+  ) {
     days = 7;
-  } else if (lowerText.includes("mês passado") || lowerText.includes("last month")) {
+  } else if (
+    lowerText.includes("mês passado") ||
+    lowerText.includes("last month")
+  ) {
     days = 30;
   }
 
@@ -112,9 +132,9 @@ function refineActivityMetrics(evidence: string | null, explicitDays: number | a
  * Percorre recursivamente objetos e arrays.
  */
 function restoreUrls(data: any, map: Map<string, string>): any {
-  if (typeof data === 'string') {
+  if (typeof data === "string") {
     // Substitui todas as ocorrências de placeholders
-    if (data.includes('__URL_PLACEHOLDER_')) {
+    if (data.includes("__URL_PLACEHOLDER_")) {
       return data.replace(/__URL_PLACEHOLDER_(\d+)__/g, (match) => {
         return map.get(match) || match;
       });
@@ -122,9 +142,9 @@ function restoreUrls(data: any, map: Map<string, string>): any {
     return data;
   }
   if (Array.isArray(data)) {
-    return data.map(item => restoreUrls(item, map));
+    return data.map((item) => restoreUrls(item, map));
   }
-  if (typeof data === 'object' && data !== null) {
+  if (typeof data === "object" && data !== null) {
     const newObj: any = {};
     for (const key in data) {
       newObj[key] = restoreUrls(data[key], map);
@@ -139,6 +159,24 @@ function restoreUrls(data: any, map: Map<string, string>): any {
  */
 function cleanAndParseJSON(text: string): any[] {
   if (!text || text.trim().length === 0) return [];
+
+  // EARLY DETECTION: Se a resposta claramente não é JSON, retorna vazio
+  const trimmedStart = text.trim().substring(0, 200).toLowerCase();
+  const invalidPatterns = [
+    /^(aqui est[áa]|here is|para |to find|vou |i will)/i,
+    /^```python/i,
+    /^import\s+/i,
+    /^def\s+\w+\s*\(/i,
+    /^class\s+\w+/i,
+    /^from\s+\w+\s+import/i,
+  ];
+
+  if (invalidPatterns.some((pattern) => pattern.test(trimmedStart))) {
+    console.warn(
+      "🚫 Resposta detectada como código/narrativa, não JSON. Ignorando."
+    );
+    return [];
+  }
 
   let cleaned = text;
 
@@ -156,7 +194,7 @@ function cleanAndParseJSON(text: string): any[] {
   cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, "");
 
   // 4. Correção preliminar de URLs malformadas comuns em LLMs
-  cleaned = cleaned.replace(/(https?|ftp)\s*:\s*\/\/\s*/yi, "$1://");
+  cleaned = cleaned.replace(/(https?|ftp)\s*:\s*\/\/\s*/iy, "$1://");
 
   // 5. Proteção de URLs (Extração e Tokenização)
   const urlMap = new Map<string, string>();
@@ -173,7 +211,7 @@ function cleanAndParseJSON(text: string): any[] {
       suffix = trailing[0];
       url = url.slice(0, -trailing[0].length);
     }
-    if (url.endsWith('.')) url = url.slice(0, -1);
+    if (url.endsWith(".")) url = url.slice(0, -1);
 
     const token = `__URL_PLACEHOLDER_${urlCounter++}__`;
     urlMap.set(token, url);
@@ -181,13 +219,16 @@ function cleanAndParseJSON(text: string): any[] {
   });
 
   // 6. Limpeza de Sintaxe JSON
-  cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
+  cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
   cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
 
   // 7. Tentativa de Parse Direto (Melhor Cenário)
   try {
     const parsed = JSON.parse(cleaned);
-    const restored = restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
+    const restored = restoreUrls(
+      Array.isArray(parsed) ? parsed : [parsed],
+      urlMap
+    );
     return restored;
   } catch (e) {
     // Falha silenciosa
@@ -195,7 +236,8 @@ function cleanAndParseJSON(text: string): any[] {
 
   // 8. Estratégia de Extração de Múltiplos Objetos/Arrays (Fallback)
   const results: any[] = [];
-  const objectOrArrayRegex = /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})|(\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\])/g;
+  const objectOrArrayRegex =
+    /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})|(\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\])/g;
 
   let match;
   while ((match = objectOrArrayRegex.exec(cleaned)) !== null) {
@@ -207,7 +249,7 @@ function cleanAndParseJSON(text: string): any[] {
 
       if (Array.isArray(restored)) {
         results.push(...restored);
-      } else if (typeof restored === 'object' && restored !== null) {
+      } else if (typeof restored === "object" && restored !== null) {
         results.push(restored);
       }
     } catch (err) {
@@ -216,7 +258,10 @@ function cleanAndParseJSON(text: string): any[] {
   }
 
   if (results.length === 0 && text.length > 50) {
-    console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:", text.substring(0, 500) + "...");
+    console.warn(
+      "⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:",
+      text.substring(0, 500) + "..."
+    );
   }
 
   return results;
@@ -225,12 +270,12 @@ function cleanAndParseJSON(text: string): any[] {
 /**
  * Função Wrapper com Retry, Backoff Exponencial Aprimorado e Logs Detalhados.
  * NOTA: responseMimeType e responseSchema foram removidos para compatibilidade com a ferramenta googleSearch.
- * 
+ *
  * Em desenvolvimento local, usa fallback direto para a API Gemini se o proxy não estiver disponível.
  */
 
 // Detect if we're in development mode
-const isDev = import.meta.env?.DEV || window.location.hostname === 'localhost';
+const isDev = import.meta.env?.DEV || window.location.hostname === "localhost";
 
 async function callGeminiDirect(
   modelId: string,
@@ -239,29 +284,44 @@ async function callGeminiDirect(
   signal?: AbortSignal
 ): Promise<any> {
   // Tenta usar API key do localStorage ou variável de ambiente
-  const apiKey = localStorage.getItem('vericorp_dev_api_key') || import.meta.env?.VITE_API_KEY;
+  const apiKey =
+    localStorage.getItem("vericorp_dev_api_key") ||
+    import.meta.env?.VITE_API_KEY;
 
   if (!apiKey) {
-    throw new Error('Para desenvolvimento local, configure sua API key: localStorage.setItem("vericorp_dev_api_key", "SUA_CHAVE")');
+    throw new Error(
+      'Para desenvolvimento local, configure sua API key: localStorage.setItem("vericorp_dev_api_key", "SUA_CHAVE")'
+    );
   }
 
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
 
   const response = await fetch(geminiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
+      systemInstruction: {
+        parts: [{
+          text: "Você é um banco de dados de geolocalização comercial. Você SEMPRE responde APENAS com JSON válido. Você NUNCA escreve explicações, código, introduções ou qualquer texto fora do JSON. Sua única saída permitida é um array JSON começando com [ e terminando com ]. Se você não encontrar dados, responda com array vazio []."
+        }]
+      },
       generationConfig: { temperature: isBroadSearch ? 0.65 : 0.4 },
       tools: [{ googleSearch: {} }],
       safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      ]
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+        {
+          category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          threshold: "BLOCK_NONE",
+        },
+        {
+          category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+          threshold: "BLOCK_NONE",
+        },
+      ],
     }),
-    signal
+    signal,
   });
 
   if (!response.ok) {
@@ -270,7 +330,7 @@ async function callGeminiDirect(
   }
 
   const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   return { text, candidates: data.candidates };
 }
 
@@ -290,9 +350,9 @@ async function generateContentWithRetry(
       console.debug(`[Gemini] 🔄 Tentativa ${attempt + 1}/${maxRetries}...`);
 
       // Try proxy first
-      const response = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: modelId,
           contents: prompt,
@@ -300,19 +360,34 @@ async function generateContentWithRetry(
             tools: [{ googleSearch: {} }],
             temperature: isBroadSearch ? 0.65 : 0.4,
             safetySettings: [
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-            ]
-          }
+              { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+              {
+                category: "HARM_CATEGORY_HATE_SPEECH",
+                threshold: "BLOCK_NONE",
+              },
+              {
+                category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold: "BLOCK_NONE",
+              },
+              {
+                category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold: "BLOCK_NONE",
+              },
+            ],
+          },
         }),
-        signal
+        signal,
       });
 
       // If 404 or 405 in dev mode, try direct API
-      if (!response.ok && (response.status === 404 || response.status === 405) && isDev) {
-        console.warn('[Gemini] Proxy não disponível em dev, tentando API direta...');
+      if (
+        !response.ok &&
+        (response.status === 404 || response.status === 405) &&
+        isDev
+      ) {
+        console.warn(
+          "[Gemini] Proxy não disponível em dev, tentando API direta..."
+        );
         return await callGeminiDirect(modelId, prompt, isBroadSearch, signal);
       }
 
@@ -326,11 +401,14 @@ async function generateContentWithRetry(
         throw new Error("RESPOSTA_VAZIA: A IA não retornou conteúdo de texto.");
       }
       return data;
-
     } catch (error: any) {
       // If it's a network error in dev, try direct API
-      if (isDev && (error.message?.includes('Failed to fetch') || error.message?.includes('405'))) {
-        console.warn('[Gemini] Erro de rede em dev, tentando API direta...');
+      if (
+        isDev &&
+        (error.message?.includes("Failed to fetch") ||
+          error.message?.includes("405"))
+      ) {
+        console.warn("[Gemini] Erro de rede em dev, tentando API direta...");
         try {
           return await callGeminiDirect(modelId, prompt, isBroadSearch, signal);
         } catch (directError: any) {
@@ -341,13 +419,21 @@ async function generateContentWithRetry(
       attempt++;
       if (signal?.aborted) throw error;
 
-      const errorMessage = error.message || 'Sem mensagem de erro';
-      console.warn(`[Gemini] ❌ Erro na tentativa ${attempt}/${maxRetries}: ${errorMessage}`);
+      const errorMessage = error.message || "Sem mensagem de erro";
+      console.warn(
+        `[Gemini] ❌ Erro na tentativa ${attempt}/${maxRetries}: ${errorMessage}`
+      );
 
-      const isFatal = errorMessage.includes("400") || errorMessage.includes("401") || errorMessage.includes("403");
+      const isFatal =
+        errorMessage.includes("400") ||
+        errorMessage.includes("401") ||
+        errorMessage.includes("403");
       if (isFatal || attempt >= maxRetries) throw error;
 
-      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt - 1) + (Math.random() * 1000), MAX_DELAY);
+      const delay = Math.min(
+        BASE_DELAY * Math.pow(2, attempt - 1) + Math.random() * 1000,
+        MAX_DELAY
+      );
       await wait(delay);
     }
   }
@@ -359,16 +445,20 @@ export const fetchAndAnalyzeBusinesses = async (
   maxResults: number,
   onProgress: (msg: string) => void,
   onBatchResults: (results: BusinessEntity[]) => void,
-  coordinates?: { lat: number, lng: number } | null,
+  coordinates?: { lat: number; lng: number } | null,
   signal?: AbortSignal
 ): Promise<BusinessEntity[]> => {
   if (!process.env.API_KEY) {
-    throw new Error("A chave da API está ausente. Selecione uma chave paga para continuar.");
+    throw new Error(
+      "A chave da API está ausente. Selecione uma chave paga para continuar."
+    );
   }
 
   pruneCache();
 
-  const cacheKey = `${segment.trim().toLowerCase()}-${region.trim().toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ''}`;
+  const cacheKey = `${segment.trim().toLowerCase()}-${region
+    .trim()
+    .toLowerCase()}-${maxResults}-${coordinates ? coordinates.lat : ""}`;
 
   if (searchCache.has(cacheKey)) {
     const entry = searchCache.get(cacheKey)!;
@@ -388,7 +478,11 @@ export const fetchAndAnalyzeBusinesses = async (
   let existingProspectsMap = new Set<string>();
   try {
     const prospects = await dbService.getAllProspects();
-    prospects.forEach(p => existingProspectsMap.add(`${p.name.toLowerCase()}|${p.address.toLowerCase()}`));
+    prospects.forEach((p) =>
+      existingProspectsMap.add(
+        `${p.name.toLowerCase()}|${p.address.toLowerCase()}`
+      )
+    );
   } catch (e) {
     console.warn("Não foi possível carregar prospects do banco:", e);
   }
@@ -401,9 +495,14 @@ export const fetchAndAnalyzeBusinesses = async (
   let attempts = 0;
   const maxLoops = Math.ceil(maxResults / 10) + 5;
 
-  const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
+  const isBroadSearch =
+    segment === "Varredura Geral (Multisetorial)" || segment === "";
 
-  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}...`);
+  onProgress(
+    `Inicializando ${
+      isBroadSearch ? "varredura geográfica" : "busca segmentada"
+    }...`
+  );
 
   const modelId = "gemini-2.5-flash";
 
@@ -411,16 +510,22 @@ export const fetchAndAnalyzeBusinesses = async (
     attempts++;
 
     const isFirstBatch = allEntities.length === 0;
-    const targetBatchSize = isFirstBatch ? INITIAL_BATCH_SIZE : SUBSEQUENT_BATCH_SIZE;
+    const targetBatchSize = isFirstBatch
+      ? INITIAL_BATCH_SIZE
+      : SUBSEQUENT_BATCH_SIZE;
     const remaining = maxResults - allEntities.length;
     const currentBatchSize = Math.min(targetBatchSize, remaining);
 
     const exclusionList = Array.from(seenNames).slice(-50).join(", ");
 
     if (isFirstBatch) {
-      onProgress("🚀 Início Rápido: Buscando primeiros resultados essenciais...");
+      onProgress(
+        "🚀 Início Rápido: Buscando primeiros resultados essenciais..."
+      );
     } else {
-      onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`);
+      onProgress(
+        `🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`
+      );
     }
 
     let promptTask = "";
@@ -428,7 +533,11 @@ export const fetchAndAnalyzeBusinesses = async (
       promptTask = `
         1. CONTEXTO: VARREDURA GERAL DE INFRAESTRUTURA (Multisetorial).
         LOCALIZAÇÃO ALVO: "${region}".
-        ${coordinates ? `📍 PONTO DE ANCORAGEM (GPS PRECISO): Lat ${coordinates.lat}, Lng ${coordinates.lng}.` : ''}
+        ${
+          coordinates
+            ? `📍 PONTO DE ANCORAGEM (GPS PRECISO): Lat ${coordinates.lat}, Lng ${coordinates.lng}.`
+            : ""
+        }
 
         2. ANÁLISE DE LOCALIZAÇÃO E PRECISÃO (CRÍTICO):
            - ANALISE SEMANTICAMENTE O INPUT DE LOCAL: É uma RUA/AVENIDA específica ou uma região (Bairro/Cidade)?
@@ -476,47 +585,49 @@ export const fetchAndAnalyzeBusinesses = async (
 
     // Definindo estrutura JSON explícita no prompt
     const prompt = `
-      Atue como um Especialista em Geomarketing.
-      
-      OBJETIVO:
-      ${promptTask}
-      Encontre ${currentBatchSize} empresas.
-      
-      5. EXCLUSÃO: Não repita: [${exclusionList}].
-      
-      6. FORMATO DE SAÍDA OBRIGATÓRIO (JSON ARRAY):
-      Você DEVE retornar APENAS um JSON válido contendo uma lista de objetos.
-      NÃO escreva introduções, NÃO coloque citações de fontes como [1], apenas o JSON cru.
+Você é um banco de dados de empresas. Responda APENAS com JSON válido.
+NÃO escreva explicações, código, introduções ou qualquer texto fora do JSON.
+Sua única saída permitida é um array JSON começando com [ e terminando com ].
 
-      Estrutura do JSON:
-      [
-        {
-          "name": "Nome da Empresa",
-          "address": "Endereço completo",
-          "phone": "Telefone ou null",
-          "website": "URL ou null",
-          "socialLinks": ["URL1", "URL2"],
-          "lastActivityEvidence": "Texto específico sobre evidência recente",
-          "daysSinceLastActivity": 2,
-          "trustScore": 85,
-          "status": "Ativo",
-          "category": "Categoria",
-          "matchType": "EXACT",
-          "lat": -23.55,
-          "lng": -46.63
-        }
-      ]
+TAREFA: ${promptTask}
+Encontre ${currentBatchSize} empresas REAIS e EXISTENTES.
 
-      REGRAS DE DADOS:
-       - matchType: Use "EXACT" se estiver na rua/local solicitado, "NEARBY" se for próximo.
-       - NÃO inclua markdown (como \`\`\`json), apenas o JSON puro se possível.
-    `;
+EXCLUSÃO: Não repita: [${exclusionList}].
+
+FORMATO OBRIGATÓRIO (responda SOMENTE isto, nada mais):
+[
+  {
+    "name": "Nome Real da Empresa",
+    "address": "Endereço completo real",
+    "phone": "Telefone ou null",
+    "website": "URL ou null",
+    "socialLinks": [],
+    "lastActivityEvidence": "Evidência de atividade recente",
+    "daysSinceLastActivity": 2,
+    "trustScore": 85,
+    "status": "Ativo",
+    "category": "Categoria",
+    "matchType": "EXACT",
+    "lat": -23.55,
+    "lng": -46.63
+  }
+]
+
+REGRAS:
+- matchType: "EXACT" se no local exato, "NEARBY" se próximo
+- Responda APENAS o JSON, sem markdown, sem explicações
+`;
 
     try {
-      const response = await generateContentWithRetry(modelId, prompt, isBroadSearch);
+      const response = await generateContentWithRetry(
+        modelId,
+        prompt,
+        isBroadSearch
+      );
 
       // Tratamento robusto para extrair texto da resposta
-      const rawText = response.text ||
+      const rawText =
+        response.text ||
         response.candidates?.[0]?.content?.parts?.[0]?.text ||
         "[]";
 
@@ -550,22 +661,35 @@ export const fetchAndAnalyzeBusinesses = async (
 
           const address = item.address || "Endereço Desconhecido";
           const name = item.name || "Nome Desconhecido";
-          const isSaved = existingProspectsMap.has(`${name.toLowerCase()}|${address.toLowerCase()}`);
+          const isSaved = existingProspectsMap.has(
+            `${name.toLowerCase()}|${address.toLowerCase()}`
+          );
 
-          const socialLinksRaw = Array.isArray(item.socialLinks) ? item.socialLinks : [];
-          const validSocialLinks = socialLinksRaw.filter((l: any) => typeof l === 'string' && l.trim().length > 0 && (l.startsWith('http') || l.startsWith('www')));
+          const socialLinksRaw = Array.isArray(item.socialLinks)
+            ? item.socialLinks
+            : [];
+          const validSocialLinks = socialLinksRaw.filter(
+            (l: any) =>
+              typeof l === "string" &&
+              l.trim().length > 0 &&
+              (l.startsWith("http") || l.startsWith("www"))
+          );
 
           const whatsappLink = getWhatsAppUrl(item.phone, name);
           if (whatsappLink) validSocialLinks.unshift(whatsappLink);
 
-          let finalMatchType: 'EXACT' | 'NEARBY' = 'EXACT';
-          if (item.matchType === 'NEARBY' || item.matchType === 'CITY_WIDE') {
-            finalMatchType = 'NEARBY';
+          let finalMatchType: "EXACT" | "NEARBY" = "EXACT";
+          if (item.matchType === "NEARBY" || item.matchType === "CITY_WIDE") {
+            finalMatchType = "NEARBY";
           } else {
-            finalMatchType = 'EXACT';
+            finalMatchType = "EXACT";
           }
 
-          const { text: evidenceText, days: evidenceDays } = refineActivityMetrics(item.lastActivityEvidence, item.daysSinceLastActivity);
+          const { text: evidenceText, days: evidenceDays } =
+            refineActivityMetrics(
+              item.lastActivityEvidence,
+              item.daysSinceLastActivity
+            );
 
           const entity: BusinessEntity = {
             id: `biz-${Date.now()}-${allEntities.length + newCount}`,
@@ -576,14 +700,17 @@ export const fetchAndAnalyzeBusinesses = async (
             socialLinks: validSocialLinks,
             lastActivityEvidence: evidenceText,
             daysSinceLastActivity: evidenceDays,
-            trustScore: typeof item.trustScore === 'number' ? item.trustScore : 50,
-            status: (Object.values(BusinessStatus).includes(item.status) ? item.status : BusinessStatus.UNKNOWN) as BusinessStatus,
+            trustScore:
+              typeof item.trustScore === "number" ? item.trustScore : 50,
+            status: (Object.values(BusinessStatus).includes(item.status)
+              ? item.status
+              : BusinessStatus.UNKNOWN) as BusinessStatus,
             category: item.category || (isBroadSearch ? "Diversos" : segment),
-            lat: typeof item.lat === 'number' ? item.lat : undefined,
-            lng: typeof item.lng === 'number' ? item.lng : undefined,
+            lat: typeof item.lat === "number" ? item.lat : undefined,
+            lng: typeof item.lng === "number" ? item.lng : undefined,
             isProspect: isSaved,
-            pipelineStage: 'new',
-            matchType: finalMatchType
+            pipelineStage: "new",
+            matchType: finalMatchType,
           };
 
           batchEntities.push(entity);
@@ -600,7 +727,6 @@ export const fetchAndAnalyzeBusinesses = async (
       }
 
       await wait(300);
-
     } catch (error: any) {
       console.warn(`Erro no lote ${attempts}:`, error);
       if (allEntities.length > 0) break;
@@ -624,14 +750,16 @@ export const fetchAndAnalyzeBusinesses = async (
     searchCache.set(cacheKey, {
       timestamp: Date.now(),
       ttl: currentTTL,
-      data: allEntities
+      data: allEntities,
     });
   }
 
   return allEntities;
 };
 
-export const generateOutreachEmail = async (business: BusinessEntity): Promise<string> => {
+export const generateOutreachEmail = async (
+  business: BusinessEntity
+): Promise<string> => {
   // Configurado via proxy agora
   const prompt = `
     Escreva um "Cold Email" B2B para: ${business.name} (${business.category}).
@@ -641,13 +769,13 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
   `;
 
   try {
-    const response = await fetch('/api/gemini', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch("/api/gemini", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gemini-2.5-flash",
-        contents: prompt
-      })
+        contents: prompt,
+      }),
     });
     if (!response.ok) return "Erro backend.";
     const data = await response.json();

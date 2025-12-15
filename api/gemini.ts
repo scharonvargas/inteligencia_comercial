@@ -95,6 +95,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         const geminiBody: any = {
             contents: [{ parts: [{ text: contents }] }],
+            systemInstruction: {
+                parts: [{
+                    text: "Você é um banco de dados de geolocalização comercial. Você SEMPRE responde APENAS com JSON válido. Você NUNCA escreve explicações, código, introduções ou qualquer texto fora do JSON. Sua única saída permitida é um array JSON começando com [ e terminando com ]. Se você não encontrar dados, responda com array vazio []."
+                }]
+            },
             generationConfig: {
                 temperature: config?.temperature || 0.5,
             },
