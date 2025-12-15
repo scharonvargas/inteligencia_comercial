@@ -222,7 +222,13 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
         if (!googleSuccess) {
           try {
             const osmRes = await fetch(
-              `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`
+              `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`,
+              {
+                headers: {
+                  'Accept': 'application/json',
+                  'Accept-Language': 'pt-BR,pt;q=0.9'
+                }
+              }
             );
             const osmData = await osmRes.json();
 
