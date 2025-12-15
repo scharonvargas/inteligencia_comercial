@@ -22,13 +22,10 @@ const STORAGE_KEYS = {
 };
 
 const App: React.FC = () => {
-  // Inicializa estados buscando do localStorage se existir
-  const [segment, setSegment] = useState(() => localStorage.getItem(STORAGE_KEYS.SEGMENT) || '');
-  const [region, setRegion] = useState(() => localStorage.getItem(STORAGE_KEYS.REGION) || '');
-  const [maxResults, setMaxResults] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.MAX_RESULTS);
-    return saved ? Number(saved) : 20;
-  });
+  // Form states - always start fresh on page load
+  const [segment, setSegment] = useState('');
+  const [region, setRegion] = useState('');
+  const [maxResults, setMaxResults] = useState(10);
 
   // Webhook State
   const [webhookUrl, setWebhookUrl] = useState(() => localStorage.getItem(STORAGE_KEYS.WEBHOOK_URL) || '');

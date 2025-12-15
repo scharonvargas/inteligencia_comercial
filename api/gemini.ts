@@ -19,14 +19,34 @@ interface AIProvider {
 }
 
 const PROVIDERS: AIProvider[] = [
-    // PRIMARY: Groq - 10x faster, free tier (30 req/min)
+    // PRIMARY: Gemini - stable, reliable
+    {
+        name: 'Gemini',
+        endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}',
+        apiKey: process.env.API_KEY,
+        formatRequest: (model, contents, config) => ({
+            body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: contents }] }],
+                generationConfig: {
+                    temperature: config?.temperature ?? 0.5,
+                    maxOutputTokens: 8192,
+                    responseMimeType: "text/plain"
+                },
+                safetySettings: config?.safetySettings || [],
+                tools: config?.tools || []
+            }),
+            headers: { "Content-Type": "application/json" }
+        }),
+        extractResponse: (data) => data
+    },
+    // FALLBACK: Groq - fast, free tier (30 req/min)
     {
         name: 'Groq',
         endpoint: 'https://api.groq.com/openai/v1/chat/completions',
         apiKey: process.env.GROQ_API_KEY,
         formatRequest: (model, contents, config) => ({
             body: JSON.stringify({
-                model: 'llama-3.3-70b-versatile', // Free, fast, powerful
+                model: 'llama-3.3-70b-versatile',
                 messages: [{ role: 'user', content: contents }],
                 temperature: config?.temperature ?? 0.5,
                 max_tokens: 8192
@@ -37,7 +57,6 @@ const PROVIDERS: AIProvider[] = [
             }
         }),
         extractResponse: (data) => ({
-            // Transform Groq response to Gemini format for compatibility
             candidates: [{
                 content: {
                     parts: [{ text: data.choices?.[0]?.message?.content || '' }]
