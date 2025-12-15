@@ -46,7 +46,7 @@ const PROVIDERS: AIProvider[] = [
         apiKey: process.env.GROQ_API_KEY,
         formatRequest: (model, contents, config) => ({
             body: JSON.stringify({
-                model: 'llama-3.3-70b-versatile',
+                model: 'llama-3.1-8b-instant', // More stable, fast
                 messages: [{ role: 'user', content: contents }],
                 temperature: config?.temperature ?? 0.5,
                 max_tokens: 8192
@@ -62,28 +62,6 @@ const PROVIDERS: AIProvider[] = [
                     parts: [{ text: data.choices?.[0]?.message?.content || '' }]
                 }
             }]
-        })
-    },
-    // FALLBACK: Gemini - when Groq unavailable
-    {
-        name: 'Gemini',
-        endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}',
-        apiKey: process.env.API_KEY,
-        formatRequest: (model, contents, config) => ({
-            body: JSON.stringify({
-                contents: [{ role: "user", parts: [{ text: contents }] }],
-                generationConfig: {
-                    temperature: config?.temperature ?? 0.5,
-                    maxOutputTokens: 8192,
-                    responseMimeType: "text/plain"
-                },
-                safetySettings: config?.safetySettings || [],
-                tools: config?.tools || []
-            }),
-            headers: { "Content-Type": "application/json" }
-        }),
-        extractResponse: (data) => data
-    }
 ];
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
