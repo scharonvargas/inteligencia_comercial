@@ -504,7 +504,7 @@ export const fetchAndAnalyzeBusinesses = async (
   );
 
   const modelId = "gemini-2.5-flash";
-  console.log("🔍 [VeriCorp v22.1] Iniciando busca com prompt reforçado (JSON Only)...");
+  console.log("🔍 [VeriCorp v24.x] Iniciando busca com prompt reforçado (JSON Only)...");
 
   while (allEntities.length < maxResults && attempts < maxLoops) {
     attempts++;
