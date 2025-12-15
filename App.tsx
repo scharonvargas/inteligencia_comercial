@@ -4,6 +4,7 @@ import { BusinessEntity, PipelineStage } from './types';
 import { ResultsTable } from './components/ResultsTable';
 import { ResultsMap } from './components/ResultsMap';
 import { KanbanView } from './components/KanbanView';
+import { DashboardView } from './components/DashboardView';
 import { AddressAutocomplete } from './components/AddressAutocomplete';
 import { dbService } from './services/dbService';
 import { SettingsModal } from './components/SettingsModal';
@@ -61,7 +62,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   // Controle de Visualização
-  const [viewMode, setViewMode] = useState<'table' | 'kanban'>('table');
+  const [viewMode, setViewMode] = useState<'table' | 'kanban' | 'dashboard'>('table');
 
   // Status do Banco de Dados
   const [dbStatus, setDbStatus] = useState<'loading' | 'online' | 'offline'>('loading');
@@ -97,6 +98,8 @@ const App: React.FC = () => {
     };
     checkDb();
   }, []);
+
+
 
   const handleSearch = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -244,17 +247,24 @@ const App: React.FC = () => {
               <div className="bg-slate-800 p-1 rounded-lg flex border border-slate-700">
                 <button
                   onClick={() => setViewMode('table')}
-                  className={`p-1.5 rounded transition-colors ${viewMode === 'table' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                  title="Visualização em Lista"
+                  className={`p-2 rounded-lg transition-colors ${viewMode === 'table' ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`}
+                  title="Lista"
                 >
-                  <LayoutList size={18} />
+                  <LayoutList className="w-5 h-5" />
                 </button>
                 <button
                   onClick={() => setViewMode('kanban')}
-                  className={`p-1.5 rounded transition-colors ${viewMode === 'kanban' ? 'bg-slate-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                  title="Visualização Kanban"
+                  className={`p-2 rounded-lg transition-colors ${viewMode === 'kanban' ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`}
+                  title="Kanban (Pipeline)"
                 >
-                  <KanbanSquare size={18} />
+                  <KanbanSquare className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => setViewMode('dashboard')}
+                  className={`p-2 rounded-lg transition-colors ${viewMode === 'dashboard' ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`}
+                  title="Dashboard (Analytics)"
+                >
+                  <LayoutList className="w-5 h-5" />
                 </button>
               </div>
             )}
@@ -442,11 +452,16 @@ const App: React.FC = () => {
           <div className="animate-slideUp space-y-6 w-full">
 
             {/* Toggle View Components */}
-            {viewMode === 'table' ? (
-              <ResultsTable data={results} webhookUrl={webhookUrl} />
-            ) : (
-              <KanbanView prospects={results} onMove={handlePipelineChange} />
-            )}
+            {/* Content Area */}
+            <div className="flex-1 overflow-hidden relative">
+              {viewMode === 'table' ? (
+                <ResultsTable data={results} webhookUrl={webhookUrl} />
+              ) : viewMode === 'kanban' ? (
+                <KanbanView prospects={results.filter(r => r.isProspect)} onMove={handlePipelineChange} />
+              ) : (
+                <DashboardView prospects={results} />
+              )}
+            </div>
 
             {/* Map Component (Moved to bottom) */}
             <ResultsMap data={results} />

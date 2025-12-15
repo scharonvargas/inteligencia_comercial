@@ -311,6 +311,54 @@ export const dbService = {
 
       return getLocalProspects();
     }
+  },
+
+  /**
+   * Verifica cache de busca
+   */
+  checkCache: async (key: string): Promise<BusinessEntity[] | null> => {
+    if (!supabase) return null;
+    try {
+      const { data, error } = await supabase
+        .from('search_cache')
+        .select('results, created_at')
+        .eq('query_key', key)
+        .single();
+
+      if (error || !data) return null;
+
+      // TTL Check (e.g. 24 hours)
+      const now = new Date();
+      const created = new Date(data.created_at);
+      const diffHours = (now.getTime() - created.getTime()) / (1000 * 60 * 60);
+
+      if (diffHours > 24) {
+        // Cache expired, delete it async
+        supabase.from('search_cache').delete().eq('query_key', key).then();
+        return null;
+      }
+
+      return data.results as BusinessEntity[];
+    } catch (e) {
+      console.warn("Cache check failed:", e);
+      return null;
+    }
+  },
+
+  /**
+   * Salva resultado no cache
+   */
+  saveCache: async (key: string, results: BusinessEntity[]) => {
+    if (!supabase || results.length === 0) return;
+    try {
+      await supabase.from('search_cache').upsert({
+        query_key: key,
+        results: results,
+        created_at: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn("Cache save failed:", e);
+    }
   }
 };
 

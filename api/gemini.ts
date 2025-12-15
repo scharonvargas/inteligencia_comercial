@@ -19,16 +19,12 @@ export default async function handler(req: Request) {
 
         const ai = new GoogleGenAI({ apiKey });
 
-        // Recria a chamada para a IA
-        const llm = ai.models.get(model || "gemini-2.5-flash"); // Ajuste conforme a SDK nova
+        const targetModel = model || "gemini-2.5-flash";
 
-        // Na nova SDK @google/genai, a chamada pode variar ligeiramente de generativelanguage,
-        // mas baseando no código anterior do usuário que usava:
-        // ai.models.generateContent({ model: modelId, contents: prompt, ... })
+        console.log(`[Proxy] Requesting model: ${targetModel}`);
 
-        // Vamos usar a mesma assinatura que o frontend mandava, mas instanciando aqui
         const response = await ai.models.generateContent({
-            model: model || "gemini-2.5-flash",
+            model: targetModel,
             contents,
             config
         });

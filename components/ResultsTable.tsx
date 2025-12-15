@@ -189,6 +189,8 @@ interface VirtualRowProps {
     onAnalyzeCompetitors: (biz: BusinessEntity) => void;
     competitorData: Record<string, CompetitorAnalysisType>;
     loadingCompetitorsId: string | null;
+    selectedIds: Set<string>;
+    onSelectOne: (id: string) => void;
   }
 }
 
@@ -217,8 +219,18 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
         <div
           onClick={() => toggleRow(biz.id)}
           className="grid items-center gap-4 py-4 px-2 cursor-pointer"
-          style={{ gridTemplateColumns: GRID_TEMPLATE }}
+          style={{ gridTemplateColumns: "30px " + GRID_TEMPLATE }}
         >
+          {/* 0. Checkbox */}
+          <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              className="rounded border-slate-700 bg-slate-900 text-brand-500 focus:ring-brand-500 cursor-pointer"
+              checked={data.selectedIds.has(biz.id)}
+              onChange={() => data.onSelectOne(biz.id)}
+            />
+          </div>
+
           {/* 1. Chevron */}
           <div className="flex justify-center text-slate-500">
             {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
@@ -568,6 +580,35 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, webhookUrl }) 
   const [loadingCompetitorsId, setLoadingCompetitorsId] = useState<string | null>(null);
   const [competitorData, setCompetitorData] = useState<Record<string, CompetitorAnalysisType>>({});
 
+  // Batch Selection State
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const handleSelectAll = useCallback(() => {
+    if (selectedIds.size === filteredData.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredData.map(d => d.id)));
+    }
+  }, [filteredData, selectedIds]);
+
+  const handleSelectOne = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleBatchWhatsApp = useCallback(() => {
+    const selected = filteredData.filter(d => selectedIds.has(d.id));
+    if (selected.length === 0) return;
+
+    // Open Batch Modal or logic here
+    const phones = selected.filter(s => s.phone).length;
+    alert(`Preparando envio para ${phones} contatos... (Funcionalidade simulada: abriria ${phones} abas ou conectaria com API)`);
+  }, [filteredData, selectedIds]);
+
   const handleAnalyzeCompetitors = useCallback(async (biz: BusinessEntity) => {
     setLoadingCompetitorsId(biz.id);
     try {
@@ -750,13 +791,16 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, webhookUrl }) 
     hasWebhook: !!webhookUrl,
     onAnalyzeCompetitors: handleAnalyzeCompetitors,
     competitorData,
-    loadingCompetitorsId
+    loadingCompetitorsId,
+    selectedIds,
+    onSelectOne: handleSelectOne
   }), [
     filteredData, expandedRowId, toggleRow, handleToggleProspect,
     handleGenerateScripts, generatedScripts, loadingScriptsId,
     handleViewMap,
     handleVerifyCnpj, verifyingCnpjId, cnpjData, handleExportWebhook, webhookUrl,
-    handleAnalyzeCompetitors, competitorData, loadingCompetitorsId
+    handleAnalyzeCompetitors, competitorData, loadingCompetitorsId,
+    selectedIds, handleSelectOne
   ]);
 
 
@@ -765,6 +809,27 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data, webhookUrl }) 
     <div className="w-full h-full flex flex-col animate-fadeIn">
       {viewLocationBiz && (
         <LocationModal biz={viewLocationBiz} onClose={() => setViewLocationBiz(null)} />
+      )}
+
+      {/* Floating Batch Actions */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 border border-brand-500 rounded-full px-6 py-3 flex items-center gap-4 z-50 shadow-2xl animate-slideUp">
+          <span className="text-sm font-bold text-white">{selectedIds.size} selecionados</span>
+          <div className="h-4 w-px bg-slate-600" />
+          <button
+            onClick={handleBatchWhatsApp}
+            className="flex items-center gap-2 text-sm font-bold text-emerald-400 hover:text-emerald-300 transition-colors"
+          >
+            <MessageCircle size={18} />
+            Disparar WhatsApp ({selectedIds.size})
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-2 p-1 hover:bg-slate-700 rounded-full text-slate-400"
+          >
+            <X size={16} />
+          </button>
+        </div>
       )}
 
       {/* Toolbar */}
