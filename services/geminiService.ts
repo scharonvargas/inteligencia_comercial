@@ -351,7 +351,7 @@ export const fetchAndAnalyzeBusinesses = async (
 
   onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}...`);
 
-  const modelId = "gemini-1.5-flash";
+  const modelId = "gemini-2.5-flash";
 
   while (allEntities.length < maxResults && attempts < maxLoops) {
     if (signal?.aborted) {
@@ -459,10 +459,6 @@ export const fetchAndAnalyzeBusinesses = async (
           "lastActivityEvidence": "Texto específico sobre evidência recente",
           "daysSinceLastActivity": 2,
           "trustScore": 85,
-          "status": "Ativo",
-          "category": "Categoria",
-          "status": "Ativo",
-          "category": "Categoria",
           "matchType": "EXACT",
           "lat": -23.55,
           "lng": -46.63,
@@ -614,7 +610,7 @@ export const generateOutreachEmail = async (business: BusinessEntity): Promise<s
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         contents: prompt
       })
     });
@@ -655,7 +651,7 @@ export const analyzeCompetitors = async (business: BusinessEntity): Promise<any>
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         contents: prompt
       })
     });
@@ -696,7 +692,7 @@ export const generateOmnichannelScripts = async (business: BusinessEntity): Prom
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         contents: prompt
       })
     });
