@@ -1,44 +1,152 @@
-import { GoogleGenAI } from "@google/genai";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-export const config = {
-    runtime: 'edge', // Usa Edge Runtime para performance
-};
+/**
+ * Multi-Provider AI Proxy with Fallback
+ * Primary: Google Gemini
+ * Fallback: Groq (free, fast)
+ * 
+ * Environment Variables:
+ *   - API_KEY: Google Gemini API Key
+ *   - GROQ_API_KEY: Groq Cloud API Key (free tier available)
+ */
 
-export default async function handler(req: Request) {
-    if (req.method !== 'POST') {
-        return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
+interface AIProvider {
+    name: string;
+    endpoint: string;
+    apiKey: string | undefined;
+    formatRequest: (model: string, contents: string, config?: any) => any;
+    extractResponse: (data: any) => any;
+}
+
+const PROVIDERS: AIProvider[] = [
+    {
+        name: 'Gemini',
+        endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}',
+        apiKey: process.env.API_KEY,
+        formatRequest: (model, contents, config) => ({
+            body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: contents }] }],
+                generationConfig: {
+                    temperature: config?.temperature ?? 0.5,
+                    maxOutputTokens: 8192,
+                    responseMimeType: "text/plain"
+                },
+                safetySettings: config?.safetySettings || [],
+                tools: config?.tools || []
+            }),
+            headers: { "Content-Type": "application/json" }
+        }),
+        extractResponse: (data) => data
+    },
+    {
+        name: 'Groq',
+        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+        apiKey: process.env.GROQ_API_KEY,
+        formatRequest: (model, contents, config) => ({
+            body: JSON.stringify({
+                model: 'llama-3.3-70b-versatile', // Free, fast, powerful
+                messages: [{ role: 'user', content: contents }],
+                temperature: config?.temperature ?? 0.5,
+                max_tokens: 8192
+            }),
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${process.env.GROQ_API_KEY}`
+            }
+        }),
+        extractResponse: (data) => ({
+            // Transform Groq response to Gemini format for compatibility
+            candidates: [{
+                content: {
+                    parts: [{ text: data.choices?.[0]?.message?.content || '' }]
+                }
+            }]
+        })
+    }
+];
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+    if (req.method !== "POST") {
+        return res.status(405).json({ error: "Method not allowed" });
     }
 
-    try {
-        const { model, contents, config } = await req.json();
-        const apiKey = process.env.API_KEY;
+    const { model = "gemini-2.5-flash", contents, config } = req.body;
 
-        if (!apiKey) {
-            return new Response(JSON.stringify({ error: 'Server API Key not configured' }), { status: 500 });
+    if (!contents) {
+        return res.status(400).json({ error: "Missing 'contents' in request body" });
+    }
+
+    // Track errors for debugging
+    const errors: { provider: string; error: string; status?: number }[] = [];
+
+    // Try each provider in order
+    for (const provider of PROVIDERS) {
+        // Skip providers without API keys
+        if (!provider.apiKey) {
+            errors.push({ provider: provider.name, error: 'API key not configured' });
+            continue;
         }
 
-        const ai = new GoogleGenAI({ apiKey });
+        try {
+            console.log(`[AI Proxy] Trying ${provider.name}...`);
 
-        const targetModel = model || "gemini-2.5-flash";
+            const endpoint = provider.endpoint
+                .replace('{MODEL}', model)
+                .replace('{API_KEY}', provider.apiKey);
 
-        console.log(`[Proxy] Requesting model: ${targetModel}`);
+            const { body, headers } = provider.formatRequest(model, contents, config);
 
-        const response = await ai.models.generateContent({
-            model: targetModel,
-            contents,
-            config
-        });
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers,
+                body
+            });
 
-        return new Response(JSON.stringify(response), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' }
-        });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = errorData.error?.message || response.statusText;
 
-    } catch (error: any) {
-        console.error("Gemini Proxy Error:", error);
-        return new Response(JSON.stringify({
-            error: error.message || 'Internal Server Error',
-            details: error.toString()
-        }), { status: 500 });
+                errors.push({
+                    provider: provider.name,
+                    error: errorMessage,
+                    status: response.status
+                });
+
+                // If 503/429, try next provider
+                if (response.status === 503 || response.status === 429) {
+                    console.log(`[AI Proxy] ${provider.name} overloaded (${response.status}), trying fallback...`);
+                    continue;
+                }
+
+                // For other errors on first provider, continue to fallback
+                if (provider.name === 'Gemini') {
+                    continue;
+                }
+
+                // Last provider failed, return error
+                throw new Error(errorMessage);
+            }
+
+            const data = await response.json();
+            const normalizedResponse = provider.extractResponse(data);
+
+            console.log(`[AI Proxy] ✅ Success with ${provider.name}`);
+            return res.status(200).json(normalizedResponse);
+
+        } catch (error: any) {
+            errors.push({
+                provider: provider.name,
+                error: error.message || 'Unknown error'
+            });
+            console.error(`[AI Proxy] ${provider.name} failed:`, error.message);
+        }
     }
+
+    // All providers failed
+    console.error('[AI Proxy] All providers failed:', errors);
+    return res.status(503).json({
+        error: 'Todos os provedores de IA estão indisponíveis',
+        details: errors,
+        suggestion: 'Tente novamente em alguns minutos ou reduza o tamanho da busca'
+    });
 }
