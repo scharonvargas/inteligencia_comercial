@@ -150,6 +150,10 @@ function restoreUrls(data: any, map: Map<string, string>): any {
 /**
  * Analisa e limpa JSON proveniente da IA com alta robustez.
  */
+/**
+ * Analisa e limpa JSON proveniente da IA com alta robustez.
+ * Suporta JSON padrão (Array) e JSON Lines (NDJSON) para resiliência contra truncamento.
+ */
 function cleanAndParseJSON(text: string): any[] {
   if (!text || text.trim().length === 0) return [];
 
@@ -164,75 +168,65 @@ function cleanAndParseJSON(text: string): any[] {
   // 2. Remover comentários JS (// ou /* */)
   cleaned = cleaned.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  // 3. Remover citações de grounding (ex: [1], [2]) que quebram JSON
-  // Cuidado para não remover arrays válidos. Removemos apenas se parecer citação isolada.
-  cleaned = cleaned.replace(/\[\d+\](?!\s*[:,])/g, "");
+  // 3. Remover citações de grounding (ex: [1], [2])
+  cleaned = cleaned.replace(/\[\d+\]/g, "");
 
-  // 4. Correção preliminar de URLs malformadas comuns em LLMs
-  cleaned = cleaned.replace(/(https?|ftp)\s*:\s*\/\/\s*/yi, "$1://");
-
-  // 5. Proteção de URLs (Extração e Tokenização)
+  const results: any[] = [];
   const urlMap = new Map<string, string>();
-  let urlCounter = 0;
 
-  // Regex aprimorada para capturar URLs
-  const urlRegex = /((?:https?:\/\/(?:www\.)?|(?:www\.))[^\s"'{}\],]+)/gi;
-
-  cleaned = cleaned.replace(urlRegex, (match) => {
-    let url = match;
-    const trailing = url.match(/[),;\]}]+$/);
-    let suffix = "";
-    if (trailing) {
-      suffix = trailing[0];
-      url = url.slice(0, -trailing[0].length);
-    }
-    if (url.endsWith('.')) url = url.slice(0, -1);
-
-    const token = `__URL_PLACEHOLDER_${urlCounter++}__`;
-    urlMap.set(token, url);
-    return token + suffix;
-  });
-
-  // 6. Limpeza de Sintaxe JSON
-  cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
-  cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
-
-  // 7. Tentativa de Parse Direto (Melhor Cenário)
+  // Estratégia A: Tentar parse como JSON Array completo
   try {
-    const parsed = JSON.parse(cleaned);
-    const restored = restoreUrls(Array.isArray(parsed) ? parsed : [parsed], urlMap);
-    return restored;
+    const fixedJsonStr = cleaned.replace(/'/g, '"'); // Normaliza aspas simples
+    const parsed = JSON.parse(fixedJsonStr);
+    if (Array.isArray(parsed)) return restoreUrls(parsed, urlMap);
+    if (typeof parsed === 'object' && parsed !== null) return [restoreUrls(parsed, urlMap)];
   } catch (e) {
-    // Falha silenciosa
+    // Falha normal se estiver truncado ou for NDJSON
   }
 
-  // 8. Estratégia de Extração de Múltiplos Objetos/Arrays (Fallback)
-  const results: any[] = [];
-  const objectOrArrayRegex = /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})|(\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\])/g;
+  // Estratégia B: Parse Linha a Linha (NDJSON / JSON Lines)
+  // Divide por quebras de linha e tenta parsear cada linha como um objeto
+  const lines = cleaned.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    
+    // Ignora início/fim de array solto
+    if (trimmed === '[' || trimmed === ']') continue;
+    // Remove vírgula final se houver (comum em listas)
+    const lineContent = trimmed.replace(/,$/, '');
 
+    try {
+      const parsed = JSON.parse(lineContent);
+      if (parsed && typeof parsed === 'object') {
+        results.push(parsed);
+      }
+    } catch (e) {
+      // Linha inválida, ignora
+    }
+  }
+
+  if (results.length > 0) return restoreUrls(results, urlMap);
+
+  // Estratégia C: Regex Fallback (Último recurso para extrair objetos em texto sujo)
+  const regex = /(\{(?:[^{}]|(?:\{[^{}]*\}))*\})/g;
   let match;
-  while ((match = objectOrArrayRegex.exec(cleaned)) !== null) {
+  while ((match = regex.exec(cleaned)) !== null) {
     const jsonStr = match[0];
     try {
       const fixedJsonStr = jsonStr.replace(/'/g, '"');
       const parsed = JSON.parse(fixedJsonStr);
-      const restored = restoreUrls(parsed, urlMap);
-
-      if (Array.isArray(restored)) {
-        results.push(...restored);
-      } else if (typeof restored === 'object' && restored !== null) {
-        results.push(restored);
-      }
+      results.push(parsed);
     } catch (err) {
       // Ignora fragmentos inválidos
     }
   }
 
   if (results.length === 0 && text.length > 50) {
-    console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto recebido:", text.substring(0, 500) + "...");
+    console.warn("⚠️ Falha ao fazer parse do JSON. Texto bruto (início):", text.substring(0, 200) + "...");
   }
 
-  return results;
+  return restoreUrls(results, urlMap);
 }
 
 /**
@@ -512,7 +506,7 @@ export const fetchAndAnalyzeBusinesses = async (
       `;
     }
 
-    // Definindo estrutura JSON explícita no prompt
+    // Definindo estrutura JSON explícita no prompt (FORMATO NDJSON / JSON LINES)
     const prompt = `
       Atue como um Especialista em Geomarketing.
       
@@ -522,34 +516,36 @@ export const fetchAndAnalyzeBusinesses = async (
       
       5. EXCLUSÃO: Não repita: [${exclusionList}].
       
-      6. FORMATO DE SAÍDA OBRIGATÓRIO (JSON ARRAY):
-      Você DEVE retornar APENAS um JSON válido contendo uma lista de objetos.
-      NÃO escreva introduções, NÃO coloque citações de fontes como [1], apenas o JSON cru.
+      6. FORMATO DE SAÍDA OBRIGATÓRIO (NDJSON / JSON LINES):
+      - Retorne ESTRITAMENTE um objeto JSON por linha.
+      - NÃO envolva em colchetes [].
+      - NÃO use vírgulas entre os objetos (apenas quebra de linha).
+      - NÃO use markdown (sem \`\`\`json).
+      - Exemplo:
+      {"name": "A", ...}
+      {"name": "B", ...}
 
-      Estrutura do JSON:
-      [
-        {
-          "name": "Nome da Empresa",
-          "address": "Endereço completo",
-          "phone": "Telefone ou null",
-          "website": "URL ou null",
-          "socialLinks": ["URL1", "URL2"],
-          "lastActivityEvidence": "Texto específico sobre evidência recente",
-          "daysSinceLastActivity": 2,
-          "trustScore": 85,
-          "matchType": "EXACT",
-          "lat": -23.55,
-          "lng": -46.63,
-          "cnpj": "00.000.000/0001-91",
-          "viabilityScore": 85,
-          "viabilityReason": "Site e Instagram ativos, postou ontem."
-        }
-      ]
+      Estrutura de CADA LINHA (Objeto):
+      {
+        "name": "Nome da Empresa",
+        "address": "Endereço completo",
+        "phone": "Telefone ou null",
+        "website": "URL ou null",
+        "socialLinks": ["URL1", "URL2"],
+        "lastActivityEvidence": "Texto específico sobre evidência recente",
+        "daysSinceLastActivity": 2,
+        "trustScore": 85,
+        "matchType": "EXACT",
+        "lat": -23.55,
+        "lng": -46.63,
+        "cnpj": "00.000.000/0001-91",
+        "viabilityScore": 85,
+        "viabilityReason": "Site e Instagram ativos, postou ontem."
+      }
 
       REGRAS DE DADOS:
        - Tente extrair o CNPJ se estiver visível ou facilmente inferível. Se não, deixe null.
        - matchType: Use "EXACT" se estiver na rua/local solicitado, "NEARBY" se for próximo.
-       - NÃO inclua markdown (como \`\`\`json), apenas o JSON puro se possível.
     `;
 
     try {
