@@ -120,8 +120,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     continue;
                 }
 
-                // For other errors on first provider, continue to fallback
-                if (provider.name === 'Gemini') {
+                // For other errors, try next provider if available
+                const currentIndex = PROVIDERS.indexOf(provider);
+                if (currentIndex < PROVIDERS.length - 1) {
+                    console.log(`[AI Proxy] ${provider.name} failed (${response.status}), trying fallback...`);
                     continue;
                 }
 
