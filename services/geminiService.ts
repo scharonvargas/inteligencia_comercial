@@ -65,6 +65,19 @@ export const invalidateSpecificCache = (term: string) => {
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Debounce utility for input fields - prevents excessive API calls while typing
+ * @param fn Function to debounce
+ * @param delay Delay in milliseconds (default 500ms)
+ */
+export const debounce = <T extends (...args: any[]) => any>(fn: T, delay = 500) => {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  };
+};
+
 function getWhatsAppUrl(phone: string | null, companyName: string): string | null {
   if (!phone) return null;
   const cleanPhone = phone.replace(/\D/g, '');
@@ -386,7 +399,19 @@ export const fetchAndAnalyzeBusinesses = async (
 
   const isBroadSearch = segment === "Varredura Geral (Multisetorial)" || segment === "";
 
-  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}...`);
+  // Time estimation (based on historical averages: ~3s per 10 results)
+  const estimatedTimeMs = Math.max(5000, (maxResults / 10) * 3000);
+  const startTime = Date.now();
+
+  const getTimeRemaining = () => {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.max(allEntities.length / maxResults, 0.1);
+    const estimatedTotal = elapsed / progress;
+    const remaining = Math.max(0, estimatedTotal - elapsed);
+    return Math.ceil(remaining / 1000);
+  };
+
+  onProgress(`Inicializando ${isBroadSearch ? 'varredura geográfica' : 'busca segmentada'}... (~${Math.ceil(estimatedTimeMs / 1000)}s)`);
 
   const modelId = "gemini-2.5-flash";
 
@@ -407,7 +432,8 @@ export const fetchAndAnalyzeBusinesses = async (
     if (isFirstBatch) {
       onProgress("🚀 Início Rápido: Buscando primeiros resultados essenciais...");
     } else {
-      onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... Total: ${allEntities.length}/${maxResults}`);
+      const eta = getTimeRemaining();
+      onProgress(`🔎 Buscando mais empresas (Lote ${attempts})... ${allEntities.length}/${maxResults} ${eta > 0 ? `(~${eta}s restantes)` : ''}`);
     }
 
     let promptTask = "";
