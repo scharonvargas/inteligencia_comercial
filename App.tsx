@@ -460,7 +460,7 @@ const App: React.FC = () => {
               ) : viewMode === 'kanban' ? (
                 <KanbanView prospects={results.filter(r => r.isProspect)} onMove={handlePipelineChange} />
               ) : (
-                <DashboardView prospects={results} />
+                <DashboardView data={results} prospects={results} />
               )}
             </div>
 
