@@ -1,6 +1,8 @@
 // GoogleGenAI import removed
 import { BusinessEntity, BusinessStatus } from "../types";
 import { dbService } from "./dbService";
+import { searchRealBusinesses, OSMBusiness } from "./overpassService";
+import { searchByCategory, PlaceResult } from "./placesService";
 
 // --- Configuração de Cache Granular ---
 
@@ -164,23 +166,92 @@ function restoreUrls(data: any, map: Map<string, string>): any {
  * Analisa e limpa JSON proveniente da IA com alta robustez.
  */
 // Helper para extração robusta de JSON usando pilha (Stack-Based)
+// NOVA ABORDAGEM: Extrai cada objeto completo individualmente
 function extractJSON(str: string): any {
-  let firstOpen = str.indexOf('{');
-  let firstArray = str.indexOf('[');
+  // Sanitize entire string first - remove control characters but preserve structure
+  const sanitized = str.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, ' '); // Keep \n and \r for readability then strip
 
-  // Se não achar nenhum, retorna null
+  // STRATEGY 1: Try direct parse first (ideal case)
+  try {
+    const direct = JSON.parse(sanitized);
+    return direct;
+  } catch (e) {
+    // Continue to recovery strategies
+  }
+
+  // STRATEGY 2: Extract complete objects individually (handles truncation)
+  const completeObjects: any[] = [];
+  let depth = 0;
+  let objectStart = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < sanitized.length; i++) {
+    const char = sanitized[i];
+
+    if (escape) { escape = false; continue; }
+    if (char === '\\') { escape = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (char === '{') {
+      if (depth === 0) objectStart = i; // Mark start of top-level object
+      depth++;
+    } else if (char === '}') {
+      depth--;
+      if (depth === 0 && objectStart !== -1) {
+        // Found a complete top-level object
+        let objStr = sanitized.substring(objectStart, i + 1);
+        try {
+          // AGGRESSIVE SANITIZATION for URLs and special chars
+          // 1. Replace problematic URL characters inside strings
+          objStr = objStr
+            .replace(/,\s*([\]}])/g, "$1") // trailing commas
+            .replace(/'/g, '"') // single quotes
+            .replace(/\n/g, ' ') // newlines to spaces
+            .replace(/\r/g, ' ') // carriage returns to spaces
+            .replace(/\t/g, ' '); // tabs to spaces
+
+          const obj = JSON.parse(objStr);
+          completeObjects.push(obj);
+        } catch (e: any) {
+          // LOG DETALHADO: Mostrar exatamente onde o parsing falhou
+          const errorPos = e?.message?.match(/position (\d+)/)?.[1];
+          const snippet = errorPos ? objStr.substring(Math.max(0, parseInt(errorPos) - 20), parseInt(errorPos) + 30) : objStr.substring(0, 100);
+          console.warn("⚠️ Objeto malformado:", {
+            erro: e?.message?.substring(0, 80),
+            trecho: snippet,
+            tamanho: objStr.length
+          });
+        }
+        objectStart = -1;
+      }
+    } else if (char === '[' || char === ']') {
+      // Track array depth too to avoid false object boundaries
+      // This is only for nested array tracking, not for object extraction
+    }
+  }
+
+  if (completeObjects.length > 0) {
+    console.log(`✅ Recuperados ${completeObjects.length} objetos completos de JSON truncado.`);
+    return completeObjects;
+  }
+
+  // STRATEGY 3: Legacy - try to find any valid JSON structure
+  let firstOpen = sanitized.indexOf('{');
+  let firstArray = sanitized.indexOf('[');
+
   if (firstOpen === -1 && firstArray === -1) return null;
 
-  // Decide quem vem primeiro
   let startIndices = [firstOpen, firstArray].filter(i => i !== -1).sort((a, b) => a - b);
 
   for (let start of startIndices) {
     let stack = 0;
-    let inString = false;
-    let escape = false;
+    inString = false;
+    escape = false;
 
-    for (let i = start; i < str.length; i++) {
-      const char = str[i];
+    for (let i = start; i < sanitized.length; i++) {
+      const char = sanitized[i];
 
       if (escape) { escape = false; continue; }
       if (char === '\\') { escape = true; continue; }
@@ -191,22 +262,20 @@ function extractJSON(str: string): any {
       if (char === '}' || char === ']') {
         stack--;
         if (stack === 0) {
-          // Potencial fim do JSON
-          const candidate = str.substring(start, i + 1);
+          const candidate = sanitized.substring(start, i + 1);
           try {
-            // Limpeza básica antes de parsear
             const fixed = candidate
-              .replace(/,\s*([\]}])/g, "$1") // trailing commas
-              .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":') // unquoted keys
-              .replace(/'/g, '"'); // single quotes
+              .replace(/,\s*([\]}])/g, "$1")
+              .replace(/'/g, '"');
             return JSON.parse(fixed);
           } catch (e) {
-            // Continue searching if this block was invalid
+            // Continue
           }
         }
       }
     }
   }
+
   return null;
 }
 
@@ -302,10 +371,19 @@ async function callGeminiDirect(
   isBroadSearch: boolean,
   signal?: AbortSignal
 ): Promise<any> {
-  // Tenta usar API key do localStorage ou variável de ambiente
-  const apiKey =
-    localStorage.getItem("vericorp_dev_api_key") ||
-    import.meta.env?.VITE_API_KEY;
+  // Tenta usar API key do variável de ambiente ou Fallback Hardcoded para facilitar para o User
+  let apiKey = import.meta.env.VITE_API_KEY;
+
+  // AUTOMÁTICO: Se estiver em dev e sem chave, usar a chave DeepSeek do usuário direta
+  if (!apiKey && import.meta.env.DEV) {
+    console.log("⚡ [Local Dev] Usando chave DeepSeek automática.");
+    apiKey = "sk-439006d8dade4f03bac2386aa5a10f9d";
+  }
+
+  // Fallback legado
+  if (!apiKey) {
+    apiKey = localStorage.getItem("vericorp_dev_api_key");
+  }
 
   if (!apiKey) {
     throw new Error(
@@ -313,6 +391,65 @@ async function callGeminiDirect(
     );
   }
 
+  // --- GROQ SUPPORT (Detection via Key Prefix) ---
+  if (apiKey.startsWith("gsk_")) {
+    console.log("⚡ [Local Dev] Detectada chave Groq. Usando Llama 3 via Groq.");
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: "Você é um assistente JSON estrito. Responda APENAS com um array JSON de objetos 'BusinessEntity' válidos." },
+          { role: "user", content: prompt }
+        ],
+        model: "llama-3.1-8b-instant",
+        temperature: isBroadSearch ? 0.5 : 0.2,
+        response_format: { type: "json_object" }
+      }),
+      signal
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Groq API Error ${response.status}: ${errText}`);
+    }
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || "";
+    return { text, provider: "groq-local" };
+  }
+
+  // --- DEEPSEEK SUPPORT (Detection via Key Prefix 'sk-') ---
+  // Nota: OpenAI também usa sk-, mas o contexto aqui é DeepSeek conforme pedido
+  if (apiKey.startsWith("sk-")) {
+    console.log("⚡ [Local Dev] Detectada chave DeepSeek. Usando DeepSeek-V3.");
+
+    // IMPORTANT: Use local proxy if in Dev Mode to avoid CORS, or direct URL if production (requires server proxy then)
+    const baseUrl = import.meta.env.DEV ? "/api/deepseek-proxy/chat/completions" : "https://api.deepseek.com/chat/completions";
+
+    const response = await fetch(baseUrl, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: "Você é um assistente JSON estrito. Responda APENAS com um array JSON de objetos 'BusinessEntity' válidos. NÃO use markdown. NÃO corte o JSON." },
+          { role: "user", content: prompt }
+        ],
+        model: "deepseek-chat",
+        temperature: isBroadSearch ? 0.5 : 0.2,
+        max_tokens: 8000,
+        response_format: { type: "json_object" }
+      }),
+      signal
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`DeepSeek API Error ${response.status}: ${errText}`);
+    }
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || "";
+    return { text, provider: "deepseek-local" };
+  }
+
+  // --- GEMINI FALLBACK (Default) ---
   const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
 
   const response = await fetch(geminiUrl, {
@@ -540,97 +677,157 @@ export const fetchAndAnalyzeBusinesses = async (
   const allEntities: BusinessEntity[] = [];
   const seenNames = new Set<string>();
 
-  // --- HYBRID STRATEGY: OSM + AI ---
-  onProgress("🗺️ Consultando OpenStreetMap (Dados Reais)...");
+  // --- HYBRID STRATEGY: GOOGLE PLACES → OVERPASS → AI ---
+  // Prioridade: Google Places (mais preciso) → OSM Overpass (gratuito) → IA (fallback)
 
-  let osmResults: NominatimResult[] = [];
-  try {
-    osmResults = await fetchFromNominatim(`${segment} in ${region}`);
-    if (osmResults.length > 0) {
-      onProgress(`✅ OSM encontrou ${osmResults.length} locais reais. Enriquecendo com IA...`);
-    } else {
-      onProgress("⚠️ OSM sem resultados diretos. Ativando busca profunda via IA...");
-    }
-  } catch (e) {
-    console.warn("Erro no OSM, fallback para IA pura.");
-  }
-
-  // Se OSM retornou dados, usamos a IA para formatar/enriquecer esses dados REAIS
-  if (osmResults.length > 0) {
-    const modelId = "gemini-2.5-flash";
-
-    const osmContext = JSON.stringify(osmResults.map(r => ({
-      name: r.display_name.split(',')[0],
-      full_address: r.display_name,
-      lat: r.lat,
-      lon: r.lon,
-      type: r.type
-    })).slice(0, maxResults));
-
-    const enrichmentPrompt = `
-      Tarefa: Converter dados brutos do OpenStreetMap em BusinessEntity JSON.
-      Contexto: O usuário buscou "${segment}" em "${region}".
-      
-      DADOS BRUTOS (OSM):
-      ${osmContext}
-
-      Instruções:
-      1. Use APENAS os dados fornecidos. Não invente empresas.
-      2. Formate telefone como null se não houver (OSM raramente tem telefone).
-      3. Infira a categoria correta baseada no nome/tipo.
-      4. Status sempre "Ativo" pois consta no mapa.
-      5. matchType = "EXACT" (pois vem de geocoding real).
-      
-      Output JSON (Array de BusinessEntity):
-      `;
+  if (segment && segment !== "Varredura Geral (Multisetorial)") {
+    // 1. TENTAR GOOGLE PLACES PRIMEIRO (mais preciso e atualizado)
+    onProgress("🔍 Buscando empresas no Google Places...");
 
     try {
-      const response = await generateContentWithRetry(modelId, enrichmentPrompt, false);
+      const googlePlaces = await searchByCategory(segment, region);
 
-      // ... (Lógica de Parsing existente reutilizada abaixo ou duplicada para segurança) ...
-      const rawText = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
-      const batchData = cleanAndParseJSON(rawText);
+      if (googlePlaces.length > 0) {
+        onProgress(`✅ Google Places encontrou ${googlePlaces.length} empresas REAIS!`);
 
-      const enrichedEntities: BusinessEntity[] = batchData.map((item: any, index: number) => ({
-        id: `biz-osm-${Date.now()}-${index}`,
-        name: item.name,
-        address: item.address || "Endereço extraído do OSM",
-        phone: item.phone || null,
-        website: null,
-        socialLinks: [],
-        lastActivityEvidence: "Validação via OpenStreetMap",
-        daysSinceLastActivity: 0,
-        trustScore: 90,
-        status: BusinessStatus.ACTIVE,
-        category: item.category || segment,
-        lat: parseFloat(item.lat || "0"),
-        lng: parseFloat(item.lng || "0"),
-        isProspect: false,
-        pipelineStage: 'new',
-        matchType: 'EXACT'
-      }));
+        // Converte PlaceResult para BusinessEntity
+        const googleEntities: BusinessEntity[] = googlePlaces.map((place, index) => ({
+          id: `biz-gpl-${Date.now()}-${index}`,
+          name: place.name,
+          address: place.address,
+          phone: place.phone || null,
+          website: place.website || null,
+          socialLinks: [],
+          lastActivityEvidence: place.rating ? `⭐ ${place.rating} (${place.reviewCount || 0} avaliações)` : "Google Places",
+          daysSinceLastActivity: 0,
+          trustScore: Math.min(100, 80 + (place.rating || 0) * 4), // Rating boost
+          status: place.businessStatus === 'OPERATIONAL' ? BusinessStatus.VERIFIED : BusinessStatus.ACTIVE,
+          category: segment,
+          lat: place.lat,
+          lng: place.lng,
+          isProspect: false,
+          pipelineStage: 'new',
+          matchType: 'EXACT' as const,
+          dataSource: 'google' as const,
+          verified: true, // DADOS REAIS DO GOOGLE
+          enrichment: {
+            googleRating: place.rating,
+            googleReviewCount: place.reviewCount
+          }
+        }));
 
-      allEntities.push(...enrichedEntities);
-      onBatchResults(enrichedEntities);
+        allEntities.push(...googleEntities);
+        onBatchResults(googleEntities);
 
-      // Salva no cache e retorna (Short Circuit: Se o OSM achou, confiamos nele)
-      searchCache.set(cacheKey, {
-        timestamp: Date.now(),
-        ttl: TTL_CONFIG.PRECISE,
-        data: allEntities,
-      });
+        // Se encontrou resultados suficientes, retorna direto
+        if (googleEntities.length >= maxResults * 0.8) {
+          onProgress(`🎯 Retornando ${googleEntities.length} resultados verificados do Google.`);
 
-      return allEntities;
+          searchCache.set(cacheKey, {
+            timestamp: Date.now(),
+            ttl: TTL_CONFIG.PRECISE,
+            data: allEntities,
+          });
 
-    } catch (err) {
-      console.error("Erro no enriquecimento OSM:", err);
-      onProgress("⚠️ Falha ao processar dados do mapa. Tentando método tradicional...");
-      // Fallback continua abaixo
+          return allEntities;
+        }
+
+        // Se poucos resultados, complementa com OSM
+        onProgress(`📍 Google retornou ${googleEntities.length}. Complementando com OSM...`);
+      }
+    } catch (error: any) {
+      console.warn('[Google Places] Erro:', error.message);
+      onProgress("⚠️ Google Places indisponível. Usando OSM...");
+    }
+
+    // 2. TENTAR OVERPASS (OSM) - Gratuito e alternativo
+    onProgress("🗺️ Buscando empresas reais no OpenStreetMap...");
+
+    try {
+      const osmBusinesses = await searchRealBusinesses(segment, region, maxResults);
+
+      if (osmBusinesses.length > 0) {
+        onProgress(`✅ OSM encontrou ${osmBusinesses.length} empresas REAIS verificadas!`);
+
+        // Converte OSMBusiness para BusinessEntity
+        const osmEntities: BusinessEntity[] = osmBusinesses.map((biz, index) => ({
+          id: `biz-osm-${Date.now()}-${index}`,
+          name: biz.name,
+          address: biz.address,
+          phone: biz.phone,
+          website: biz.website,
+          socialLinks: [],
+          lastActivityEvidence: "Cadastrado no OpenStreetMap",
+          daysSinceLastActivity: 0,
+          trustScore: 95, // Alta confiança - dados reais
+          status: BusinessStatus.ACTIVE,
+          category: biz.category || segment,
+          lat: biz.lat,
+          lng: biz.lng,
+          isProspect: false,
+          pipelineStage: 'new',
+          matchType: 'EXACT' as const,
+          dataSource: 'osm' as const,
+          verified: true, // DADOS REAIS
+        }));
+
+        allEntities.push(...osmEntities);
+        onBatchResults(osmEntities);
+
+        // Se encontrou resultados suficientes, retorna direto (Short Circuit)
+        if (osmEntities.length >= maxResults * 0.5) {
+          onProgress(`🎯 Retornando ${osmEntities.length} resultados verificados do OSM.`);
+
+          searchCache.set(cacheKey, {
+            timestamp: Date.now(),
+            ttl: TTL_CONFIG.PRECISE,
+            data: allEntities,
+          });
+
+          return allEntities;
+        }
+
+        // Mesmo com poucos resultados OSM, NÃO usamos IA (dados fake)
+        // Retorna o que temos de dados reais
+        if (osmEntities.length > 0) {
+          onProgress(`📍 Retornando ${allEntities.length} resultados REAIS (sem dados fake da IA).`);
+        }
+      } else {
+        onProgress("⚠️ OSM não encontrou resultados. Mostrando apenas dados do Google Places.");
+      }
+    } catch (error: any) {
+      console.error("[Overpass] Erro:", error.message);
+      onProgress("⚠️ Erro no OSM. Mostrando apenas dados do Google Places.");
     }
   }
 
-  // --- FALLBACK: LOGICA ORIGINAL (IA PURA) ---
-  // Se OSM falhou ou retornou vazio, executamos o loop original da IA
+  // --- SEM FALLBACK PARA IA ---
+  // Se temos algum resultado real (Google + OSM), retorna
+  if (allEntities.length > 0) {
+    onProgress(`✅ Busca concluída: ${allEntities.length} empresas REAIS encontradas.`);
+
+    searchCache.set(cacheKey, {
+      timestamp: Date.now(),
+      ttl: TTL_CONFIG.DEFAULT,
+      data: allEntities,
+    });
+
+    return allEntities;
+  }
+
+  // Se não encontrou NADA real, retorna vazio com mensagem clara
+  onProgress("❌ Nenhuma empresa encontrada nas fontes de dados reais (Google Places e OpenStreetMap).");
+  onProgress("💡 Dica: Tente expandir a região ou usar termos de busca mais genéricos.");
+
+  return [];
+}
+
+// --- FUNÇÃO LEGADA DESABILITADA (IA FAKE) ---
+// A função abaixo foi desabilitada para evitar dados fake.
+// Mantida como comentário para referência futura.
+
+/*
+// --- FALLBACK: LOGICA ORIGINAL (IA PURA) - DESABILITADA ---
 
   const INITIAL_BATCH_SIZE = 5;
   const SUBSEQUENT_BATCH_SIZE = 25;
@@ -725,74 +922,22 @@ export const fetchAndAnalyzeBusinesses = async (
       `;
     }
 
-    // Definindo estrutura JSON explícita no prompt
-    // Prompt com Few-Shot Learning para garantir JSON
-    const prompt = `
-Tarefa: Atuar como API REST que converte intenção de busca em JSON estruturado de empresas reais.
-Modelo: Gemini 2.5 Flash (JSON Mode STRICT)
+    // Prompt SIMPLIFICADO mas com coordenadas para o mapa
+    const prompt = `TAREFA: Listar ${currentBatchSize} empresas de "${segment}" em "${region}".
 
-Contexto: O usuário busca "${segment}" na região "${region}".
-Meta: Listar ${currentBatchSize} resultados.
+FORMATO OBRIGATÓRIO (JSON Array):
+[{"name":"Nome","address":"Endereço","phone":"(XX)XXXX-XXXX","status":"Ativo","lat":-27.5,"lng":-48.5}]
 
-Exemplos de Comportamento Correto (Few-Shot):
+REGRAS:
+- APENAS JSON puro, sem markdown
+- Campos obrigatórios: name, address, phone, status, lat, lng
+- phone pode ser null se não souber
+- lat/lng: coordenadas aproximadas da empresa (número decimal)
+- status: "Ativo" ou "Inativo"
 
-[INPUT]
-Buscar: Padarias em Centro, Florianópolis
-[OUTPUT CORRETO]
-[
-  {
-    "name": "Padaria Pão & Cia",
-    "address": "Rua Felipe Schmidt, 100, Centro, Florianópolis - SC",
-    "phone": "(48) 3222-0000",
-    "website": "http://paoecia.com.br",
-    "socialLinks": [],
-    "lastActivityEvidence": "Review recente no Google Maps (2 dias atrás).",
-    "daysSinceLastActivity": 2,
-    "trustScore": 95,
-    "status": "Ativo",
-    "category": "Padaria",
-    "matchType": "EXACT",
-    "lat": -27.595,
-    "lng": -48.548
-  }
-]
+EXCLUSÕES (já listados): ${exclusionList || 'nenhuma'}
 
-[INPUT]
-Buscar: Oficinas em Palhoça
-[OUTPUT CORRETO]
-[
-  {
-    "name": "Mecânica Total",
-    "address": "Av. Barão do Rio Branco, 50, Palhoça - SC",
-    "phone": "(48) 3333-1111",
-    "website": null,
-    "socialLinks": ["https://instagram.com/mecanicatotal"],
-    "lastActivityEvidence": "Postagem no Instagram hoje.",
-    "daysSinceLastActivity": 0,
-    "trustScore": 88,
-    "status": "Ativo",
-    "category": "Oficina Mecânica",
-    "matchType": "EXACT",
-    "lat": -27.645,
-    "lng": -48.670
-  }
-]
-
----
-INSTRUÇÃO DE PROIBIÇÃO CRÍTICA:
-1. JAMAIS gere código Python, JavaScript ou qualquer linguagem de programação.
-2. JAMAIS escreva "Aqui está o código" ou "Segue a lista".
-3. Sua resposta deve ser APENAS o JSON puro. Se falhar, retorne [].
-
----
-AGORA É SUA VEZ. EXECUTE A TAREFA REAL:
-
-INPUT REAL:
-Buscar: ${promptTask}
-Exclusões: ${exclusionList}
-
-OUTPUT JSON (APENAS ARRAY):
-`;
+RESPONDA APENAS COM O ARRAY JSON:`;
 
     try {
       const response = await generateContentWithRetry(
@@ -892,6 +1037,8 @@ OUTPUT JSON (APENAS ARRAY):
             isProspect: isSaved,
             pipelineStage: "new",
             matchType: finalMatchType,
+            dataSource: 'ai',
+            verified: false, // IA não é fonte verificada
           };
 
           batchEntities.push(entity);
@@ -907,9 +1054,22 @@ OUTPUT JSON (APENAS ARRAY):
         break;
       }
 
-      await wait(300);
+      await wait(500); // Small wait between successful batches
     } catch (error: any) {
       console.warn(`Erro no lote ${attempts}:`, error);
+
+      const isRateLimit =
+        error.message?.includes("429") ||
+        error.message?.includes("Rate limit") ||
+        error.message?.includes("Quota exceeded");
+
+      if (isRateLimit) {
+        console.warn("⏳ Rate Limit detectado. Pausando por 10s...");
+        onProgress("⏳ Atingimos o limite da API. Aguardando 10s para retomar...");
+        await wait(10000);
+        continue; // Tenta de novo sem quebrar o loop
+      }
+
       if (allEntities.length > 0) break;
       if (allEntities.length === 0 && attempts === 1) {
         throw new Error(error.message || "Falha na conexão com a IA.");
@@ -937,6 +1097,9 @@ OUTPUT JSON (APENAS ARRAY):
 
   return allEntities;
 };
+*/
+
+// --- FIM DO CÓDIGO LEGADO ---
 
 export const generateOutreachEmail = async (
   business: BusinessEntity

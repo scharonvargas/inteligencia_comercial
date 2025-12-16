@@ -6,9 +6,9 @@ import { dbService, leadScoreService } from '../services/dbService';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import {
-  ExternalLink, Phone, Globe, AlertTriangle, CheckCircle, Download,
+  ExternalLink, Phone, Globe, AlertTriangle, CheckCircle, AlertCircle, Download,
   Activity, ChevronDown, ChevronUp, Calendar, Instagram, Facebook, Linkedin,
-  Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X, Filter, Share2
+  Mail, Sparkles, Copy, Loader2, Check, Star, MessageCircle, MapPin, Target, X, Filter, Share2, Search
 } from 'lucide-react';
 
 // Workaround for react-window import in ESM/CDN environments
@@ -191,15 +191,24 @@ const DESKTOP_GRID_TEMPLATE = "50px 50px minmax(200px, 1.5fr) 120px 140px 140px 
 
 const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
   const biz = data.items[index];
+  
+  // SAFETY: Skip rendering if biz is undefined/null (can happen with malformed AI data)
+  if (!biz || !biz.id) {
+    return <div style={style} className="px-2 pb-2"><div className="text-slate-500 text-center">Dados inválidos</div></div>;
+  }
+  
+  
   const isExpanded = data.expandedRowId === biz.id;
   const { toggleRow, onToggleProspect, onGenerateEmail, generatedEmails, loadingEmailId, onCopyEmail, copiedEmailId, onViewMap, isMobile } = data;
 
-  const generatedEmail = generatedEmails[biz.id];
+  const generatedEmail = generatedEmails[biz.id] || '';
   const loadingEmail = loadingEmailId === biz.id;
 
   const waUrl = biz.phone ? createWhatsAppUrl(biz.phone, biz.name) : '#';
 
-  if (isMobile) {
+  // ERROR BOUNDARY: Wrap potentially failing code
+  try {
+    if (isMobile) {
     // Mobile Card View
     return (
       <div style={style} className="px-2 pb-2">
@@ -303,13 +312,44 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
                 );
               })()}
               <div className="font-bold text-slate-200 truncate" title={biz.name}>{biz.name}</div>
+              
+              {/* Badge de Verificação: OSM = Real, AI = Não verificado */}
+              {biz.verified ? (
+                <span className="shrink-0 text-[10px] uppercase font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1" title="Dados reais do OpenStreetMap">
+                  <CheckCircle size={8} /> <span className="hidden sm:inline">Real</span>
+                </span>
+              ) : (
+                <span className="shrink-0 text-[10px] uppercase font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1" title="Dados gerados por IA - verificar">
+                  <AlertCircle size={8} /> <span className="hidden sm:inline">Não Verificado</span>
+                </span>
+              )}
+              
               {biz.matchType === 'NEARBY' && (
                 <span className="shrink-0 text-[10px] uppercase font-bold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 flex items-center gap-1" title="Região Próxima">
                   <AlertTriangle size={8} /> <span className="hidden sm:inline">Próximo</span>
                 </span>
               )}
             </div>
-            <div className="text-xs text-slate-500 truncate mt-0.5">{biz.category}</div>
+            <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+              <span className="truncate">{biz.category}</span>
+              {/* Google Rating & Reviews */}
+              {biz.enrichment?.googleRating && (
+                <span className="flex items-center gap-1 text-amber-400 shrink-0" title={`${biz.enrichment.googleReviewCount || 0} avaliações no Google`}>
+                  <span>⭐</span>
+                  <span className="font-medium">{biz.enrichment.googleRating.toFixed(1)}</span>
+                  {biz.enrichment.googleReviewCount && (
+                    <span className="text-slate-500">({biz.enrichment.googleReviewCount})</span>
+                  )}
+                </span>
+              )}
+              {/* Data Source Badge */}
+              {biz.dataSource === 'google' && (
+                <span className="text-[9px] text-blue-400 bg-blue-500/10 px-1 rounded">Google</span>
+              )}
+              {biz.dataSource === 'osm' && (
+                <span className="text-[9px] text-green-400 bg-green-500/10 px-1 rounded">OSM</span>
+              )}
+            </div>
           </div>
 
           {/* 4. Status */}
@@ -339,6 +379,19 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
                 </a>
               </div>
             ) : <span className="text-slate-600">Sem telefone</span>}
+            
+            {/* Botão Buscar CNPJ */}
+            <a
+              href={`https://www.google.com/search?q=CNPJ+${encodeURIComponent(biz.name)}+${encodeURIComponent(biz.address?.split(',')[0] || '')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e: React.MouseEvent) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 text-[10px] text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/20 px-1.5 py-0.5 rounded transition-colors w-fit"
+              title="Pesquisar CNPJ no Google"
+            >
+              <Search size={10} />
+              <span>Buscar CNPJ</span>
+            </a>
           </div>
 
           {/* 6. Activity */}
@@ -521,6 +574,17 @@ const VirtualRow = ({ index, style, data }: VirtualRowProps) => {
       </div>
     </div>
   );
+  } catch (error: any) {
+    // ERROR FALLBACK: Display error instead of crashing
+    console.error("⚠️ VirtualRow Error:", error?.message, biz);
+    return (
+      <div style={style} className="px-2 pb-2">
+        <div className="bg-red-900/20 border border-red-500/30 rounded p-2 text-red-400 text-xs">
+          Erro ao renderizar: {error?.message || 'Erro desconhecido'}
+        </div>
+      </div>
+    );
+  }
 };
 
 // --- Main Component ---
@@ -714,6 +778,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
   // Função para calcular altura da linha dinamicamente
   const getItemSize = (index: number) => {
     const item = filteredData[index];
+    if (!item) return isMobile ? 220 : 76; // Safety: return base height if item not found
     const baseHeight = isMobile ? 220 : 76; // baseHeight replaces ROW_HEIGHT
     return expandedRowId === item.id ? (baseHeight + EXPANDED_CONTENT_HEIGHT) : baseHeight;
   };
@@ -843,7 +908,7 @@ export const ResultsTable: React.FC<ResultsTableProps> = ({ data }) => {
 
       {/* Grid Header (Fixed) */}
       <div className="bg-slate-800 rounded-t-xl border border-slate-700 border-b-0">
-        <div className="grid gap-4 py-3 px-2 text-slate-400 text-xs font-bold uppercase tracking-wider" style={{ gridTemplateColumns: GRID_TEMPLATE }}>
+        <div className="grid gap-4 py-3 px-2 text-slate-400 text-xs font-bold uppercase tracking-wider" style={{ gridTemplateColumns: DESKTOP_GRID_TEMPLATE }}>
           <div className="text-center">#</div>
           <div className="text-center"><Star size={14} className="mx-auto" /></div>
           <div>Empresa</div>

@@ -16,7 +16,7 @@ import { MessageTemplates } from './components/MessageTemplates';
 import { OnboardingModal } from './components/OnboardingModal';
 import {
   Search, MapPin, Database, Radar, Loader2, Key, ListFilter, Globe2, Lightbulb, Info,
-  LayoutList, KanbanSquare, Trash2, Check, Settings, LogOut, BarChart3, Tag, MessageSquare
+  LayoutList, KanbanSquare, Trash2, Check, Settings, LogOut, BarChart3, Tag, MessageSquare, X
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -26,15 +26,19 @@ const STORAGE_KEYS = {
 };
 
 const App: React.FC = () => {
-  console.log("🚀 [VeriCorp Production Build v24.x - JSON STRICT ENABLED]");
+  // Log apenas uma vez no mount, não em cada render
+  React.useEffect(() => {
+    console.log("🚀 [VeriCorp v25.x - Validation Enabled]");
+  }, []);
+  
   const { user, loading: authLoading, signOut } = useAuth();
 
-  // Inicializa estados buscando do localStorage se existir
-  const [segment, setSegment] = useState(() => localStorage.getItem(STORAGE_KEYS.SEGMENT) || '');
-  const [region, setRegion] = useState(() => localStorage.getItem(STORAGE_KEYS.REGION) || '');
+  // Estados do formulário - SEM persistência (conforme pedido)
+  const [segment, setSegment] = useState('');
+  const [region, setRegion] = useState('');
   const [maxResults, setMaxResults] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.MAX_RESULTS);
-    return saved ? Number(saved) : 20;
+    return saved ? Number(saved) : 5;
   });
 
   // Estado para coordenadas geográficas precisas
@@ -451,6 +455,24 @@ const App: React.FC = () => {
                   </>
                 )}
               </button>
+
+              {/* Botão Limpar - só aparece se houver dados no form */}
+              {(segment || region) && !isLoading && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSegment('');
+                    setRegion('');
+                    setSearchCoords(null);
+                    setResults([]);
+                  }}
+                  className="ml-0 md:ml-2 mt-2 md:mt-0 px-3 h-12 rounded-xl font-medium transition-all flex items-center justify-center gap-2 text-slate-400 hover:text-white hover:bg-slate-700/50 border border-slate-700"
+                  title="Limpar formulário"
+                >
+                  <X size={18} />
+                  <span className="hidden sm:inline">Limpar</span>
+                </button>
+              )}
 
               {/* Search History */}
               <SearchHistory

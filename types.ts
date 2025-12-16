@@ -23,6 +23,29 @@ export interface BusinessEntity {
   isProspect?: boolean; // Novo campo para controle de favoritos
   pipelineStage?: string;
   matchType?: 'EXACT' | 'NEARBY'; // Indica se é no local exato ou expansão por proximidade
+
+  // Origem dos dados
+  dataSource: 'osm' | 'ai' | 'google' | 'manual';
+  verified: boolean; // true = dados reais, false = IA/não verificado
+
+  // Campos de Validação
+  cnpj?: string;
+  validationStatus?: 'pending' | 'verified' | 'partial' | 'failed';
+  validationDetails?: {
+    cnpjValid?: boolean;
+    phoneValid?: boolean;
+    addressValid?: boolean;
+    lastValidated?: string;
+    cnpjData?: any;
+  };
+
+  // Campos de Enriquecimento
+  enrichment?: {
+    googleRating?: number;
+    googleReviewCount?: number;
+    companySize?: string; // MEI, ME, EPP, etc
+    socialProfiles?: string[];
+  };
 }
 
 export interface SearchParams {

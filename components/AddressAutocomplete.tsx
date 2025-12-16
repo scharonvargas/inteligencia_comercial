@@ -140,11 +140,11 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
                 addressText = data.results[0].formatted_address;
              }
           } else {
-             // Tentativa 2: OpenStreetMap (Nominatim) Fallback
-             // Respeitando User-Agent policy do Nominatim (embora browser client-side seja genérico)
-             const res = await fetch(
-               `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`
-             );
+             // Tentativa 2: OpenStreetMap (Nominatim) Fallback via Proxy
+             const osmUrl = import.meta.env.DEV 
+               ? `/api/nominatim/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`
+               : `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`;
+             const res = await fetch(osmUrl);
              const data = await res.json();
              if (data && data.display_name) {
                 // Simplifica o endereço do OSM que costuma ser muito longo
@@ -225,12 +225,13 @@ export const AddressAutocomplete: React.FC<AddressAutocompleteProps> = ({
             }
         }
 
-        // 3. FALLBACK OPENSTREETMAP
+        // 3. FALLBACK OPENSTREETMAP VIA PROXY
         if (!googleSuccess) {
             try {
-              const osmRes = await fetch(
-                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`
-              );
+              const osmUrl = import.meta.env.DEV
+                ? `/api/nominatim/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`
+                : `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(value)}&addressdetails=1&limit=5&countrycodes=br`;
+              const osmRes = await fetch(osmUrl);
               const osmData = await osmRes.json();
               
               const mappedResults: SuggestionResult[] = osmData.map((item: any) => ({

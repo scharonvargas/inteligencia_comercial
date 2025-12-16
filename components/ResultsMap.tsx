@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import React, { useMemo, useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import ReactLeafletCluster from 'react-leaflet-cluster';
 import L from 'leaflet';
 import { BusinessEntity, BusinessStatus } from '../types';
@@ -20,18 +20,38 @@ interface ResultsMapProps {
   data: BusinessEntity[];
 }
 
+// Componente auxiliar para ajustar o mapa aos marcadores
+const MapBoundsUpdater: React.FC<{ data: BusinessEntity[] }> = ({ data }) => {
+  const map = useMap();
+  
+  useEffect(() => {
+    const validPoints = data.filter(d => d.lat && d.lng);
+    if (validPoints.length > 0) {
+      const bounds = L.latLngBounds(validPoints.map(d => [d.lat!, d.lng!]));
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 14 });
+    }
+    // Força recálculo do tamanho do mapa
+    setTimeout(() => map.invalidateSize(), 100);
+  }, [data, map]);
+  
+  return null;
+};
+
 export const ResultsMap: React.FC<ResultsMapProps> = ({ data }) => {
   const mapCenter: [number, number] = useMemo(() => {
     const validPoints = data.filter(d => d.lat && d.lng);
     
-    if (validPoints.length === 0) return [-23.5505, -46.6333]; // Default SP
+    if (validPoints.length === 0) return [-27.5969, -48.5495]; // Default Florianópolis
 
     const latSum = validPoints.reduce((sum, d) => sum + (d.lat || 0), 0);
     const lngSum = validPoints.reduce((sum, d) => sum + (d.lng || 0), 0);
     return [latSum / validPoints.length, lngSum / validPoints.length];
   }, [data]);
 
-  const validData = data.filter(d => d.lat !== undefined && d.lng !== undefined);
+  const validData = useMemo(() => 
+    data.filter(d => d.lat !== undefined && d.lng !== undefined && d.lat !== 0 && d.lng !== 0),
+    [data]
+  );
 
   const getStatusColor = (status: BusinessStatus) => {
     switch (status) {
@@ -43,24 +63,28 @@ export const ResultsMap: React.FC<ResultsMapProps> = ({ data }) => {
     }
   };
 
-  // If MarkerClusterGroup is undefined (import failed), fallback to fragment or simple div to prevent crash
+  // If MarkerClusterGroup is undefined (import failed), fallback
   if (!MarkerClusterGroup) {
       console.error("MarkerClusterGroup failed to load.");
-      return null;
+      return <div className="text-red-400 p-4">Erro ao carregar componente de mapa.</div>;
   }
 
   return (
-    <div className="w-full h-96 bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg mb-8 relative z-0">
+    <div className="w-full h-[500px] bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg mb-8 relative z-0">
       <MapContainer 
         center={mapCenter} 
         zoom={12} 
         style={{ height: '100%', width: '100%', zIndex: 0 }}
+        scrollWheelZoom={true}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           className="map-tiles"
         />
+        
+        {/* Componente para ajustar bounds automaticamente */}
+        <MapBoundsUpdater data={data} />
         
         {/* Cluster Group Wrapper */}
         <MarkerClusterGroup
@@ -80,7 +104,7 @@ export const ResultsMap: React.FC<ResultsMapProps> = ({ data }) => {
                     <p className="flex items-center gap-1">
                       <span className={getStatusColor(biz.status)}>{biz.status}</span>
                     </p>
-                    <p className="text-slate-400 italic">{biz.category}</p>
+                    <p className="text-slate-400 italic">{biz.category || 'Categoria não especificada'}</p>
                     <p className="flex items-start gap-1 text-slate-300">
                       <MapPin size={14} className="mt-1 shrink-0 text-slate-400" />
                       {biz.address}
@@ -105,7 +129,10 @@ export const ResultsMap: React.FC<ResultsMapProps> = ({ data }) => {
       </MapContainer>
       
       <div className="absolute top-2 right-2 z-[1000] bg-slate-900/90 p-2 rounded border border-slate-700 text-xs text-slate-300">
-         Mostrando {validData.length} pontos mapeados de {data.length}
+         {validData.length > 0 
+           ? `📍 ${validData.length} pontos mapeados de ${data.length}`
+           : `⚠️ Nenhum ponto com coordenadas (${data.length} resultados)`
+         }
       </div>
     </div>
   );
