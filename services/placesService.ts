@@ -34,7 +34,8 @@ const CACHE_TTL = 15 * 60 * 1000; // 15 minutos
 export async function searchPlaces(
     query: string,
     location?: { lat: number; lng: number },
-    radius: number = 5000
+    radius: number = 5000,
+    signal?: AbortSignal
 ): Promise<PlaceResult[]> {
     const apiKey = getPlacesApiKey();
     if (!apiKey) {
@@ -74,6 +75,7 @@ export async function searchPlaces(
         }
 
         const response = await fetch(url.toString(), {
+            signal,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -130,14 +132,15 @@ export async function searchPlaces(
 export async function validateBusiness(
     name: string,
     address: string,
-    location?: { lat: number; lng: number }
+    location?: { lat: number; lng: number },
+    signal?: AbortSignal
 ): Promise<{
     exists: boolean;
     confidence: number;
     googleData?: PlaceResult;
 }> {
     const query = `${name} ${address}`;
-    const results = await searchPlaces(query, location, 2000);
+    const results = await searchPlaces(query, location, 2000, signal);
 
     if (results.length === 0) {
         return { exists: false, confidence: 30 };
@@ -177,7 +180,9 @@ export async function enrichWithGoogle(business: {
     address: string;
     lat?: number;
     lng?: number;
-}): Promise<{
+},
+    signal?: AbortSignal
+): Promise<{
     rating?: number;
     reviewCount?: number;
     phone?: string;
@@ -189,7 +194,7 @@ export async function enrichWithGoogle(business: {
         ? { lat: business.lat, lng: business.lng }
         : undefined;
 
-    const validation = await validateBusiness(business.name, business.address, location);
+    const validation = await validateBusiness(business.name, business.address, location, signal);
 
     if (validation.exists && validation.googleData) {
         return {
@@ -210,10 +215,11 @@ export async function enrichWithGoogle(business: {
  */
 export async function searchByCategory(
     category: string,
-    location: string
+    location: string,
+    signal?: AbortSignal
 ): Promise<PlaceResult[]> {
     const query = `${category} em ${location}`;
-    return searchPlaces(query);
+    return searchPlaces(query, undefined, 5000, signal);
 }
 
 /**
