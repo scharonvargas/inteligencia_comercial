@@ -204,7 +204,8 @@ function extractCategory(tags: Record<string, string>): string {
 export async function searchRealBusinesses(
     segment: string,
     location: string,
-    limit: number = 50
+    limit: number = 50,
+    signal?: AbortSignal
 ): Promise<OSMBusiness[]> {
     // Verifica cache
     const cacheKey = `${segment}|${location}|${limit}`;
@@ -219,6 +220,7 @@ export async function searchRealBusinesses(
 
     try {
         const response = await fetch('https://overpass-api.de/api/interpreter', {
+            signal,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',

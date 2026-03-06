@@ -70,6 +70,12 @@ export const invalidateSpecificCache = (term: string) => {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) {
+    throw new Error("Busca interrompida pelo usuário.");
+  }
+};
+
 function getWhatsAppUrl(
   phone: string | null,
   companyName: string
@@ -635,6 +641,8 @@ export const fetchAndAnalyzeBusinesses = async (
   coordinates?: { lat: number; lng: number } | null,
   signal?: AbortSignal
 ): Promise<BusinessEntity[]> => {
+  throwIfAborted(signal);
+
   if (!process.env.API_KEY) {
     throw new Error(
       "A chave da API está ausente. Selecione uma chave paga para continuar."
@@ -654,6 +662,7 @@ export const fetchAndAnalyzeBusinesses = async (
       onProgress("⚡ Recuperando resultados do cache instantâneo...");
       const cachedData = entry.data;
       await wait(300);
+      throwIfAborted(signal);
       onBatchResults(cachedData);
       return cachedData;
     } else {
@@ -662,15 +671,18 @@ export const fetchAndAnalyzeBusinesses = async (
   }
 
   onProgress("Sincronizando banco de dados de prospects...");
+  throwIfAborted(signal);
   let existingProspectsMap = new Set<string>();
   try {
     const prospects = await dbService.getAllProspects();
+    throwIfAborted(signal);
     prospects.forEach((p) =>
       existingProspectsMap.add(
         `${p.name.toLowerCase()}|${p.address.toLowerCase()}`
       )
     );
   } catch (e) {
+    if (signal?.aborted) throw new Error("Busca interrompida pelo usuário.");
     console.warn("Não foi possível carregar prospects do banco:", e);
   }
 
@@ -685,7 +697,8 @@ export const fetchAndAnalyzeBusinesses = async (
     onProgress("🔍 Buscando empresas no Google Places...");
 
     try {
-      const googlePlaces = await searchByCategory(segment, region);
+      const googlePlaces = await searchByCategory(segment, region, signal);
+      throwIfAborted(signal);
 
       if (googlePlaces.length > 0) {
         onProgress(`✅ Google Places encontrou ${googlePlaces.length} empresas REAIS!`);
@@ -736,6 +749,7 @@ export const fetchAndAnalyzeBusinesses = async (
         onProgress(`📍 Google retornou ${googleEntities.length}. Complementando com OSM...`);
       }
     } catch (error: any) {
+      if (signal?.aborted) throw new Error("Busca interrompida pelo usuário.");
       console.warn('[Google Places] Erro:', error.message);
       onProgress("⚠️ Google Places indisponível. Usando OSM...");
     }
@@ -744,7 +758,8 @@ export const fetchAndAnalyzeBusinesses = async (
     onProgress("🗺️ Buscando empresas reais no OpenStreetMap...");
 
     try {
-      const osmBusinesses = await searchRealBusinesses(segment, region, maxResults);
+      const osmBusinesses = await searchRealBusinesses(segment, region, maxResults, signal);
+      throwIfAborted(signal);
 
       if (osmBusinesses.length > 0) {
         onProgress(`✅ OSM encontrou ${osmBusinesses.length} empresas REAIS verificadas!`);
@@ -796,6 +811,7 @@ export const fetchAndAnalyzeBusinesses = async (
         onProgress("⚠️ OSM não encontrou resultados. Mostrando apenas dados do Google Places.");
       }
     } catch (error: any) {
+      if (signal?.aborted) throw new Error("Busca interrompida pelo usuário.");
       console.error("[Overpass] Erro:", error.message);
       onProgress("⚠️ Erro no OSM. Mostrando apenas dados do Google Places.");
     }
@@ -814,6 +830,8 @@ export const fetchAndAnalyzeBusinesses = async (
 
     return allEntities;
   }
+
+  throwIfAborted(signal);
 
   // Se não encontrou NADA real, retorna vazio com mensagem clara
   onProgress("❌ Nenhuma empresa encontrada nas fontes de dados reais (Google Places e OpenStreetMap).");

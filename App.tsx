@@ -87,6 +87,7 @@ const App: React.FC = () => {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
       setIsLoading(false);
+      setError(null);
       setProgressMsg("⚠️ Busca interrompida pelo usuário.");
     }
   }, []);
@@ -191,6 +192,9 @@ const App: React.FC = () => {
     }
     setProgressMsg(initMsg);
 
+    let totalResultsCount = 0;
+    let searchAborted = false;
+
     try {
       const searchSegment = isSweepMode ? "Varredura Geral (Multisetorial)" : segment;
 
@@ -202,6 +206,7 @@ const App: React.FC = () => {
         (msg) => setProgressMsg(msg),
         (newBatch) => {
           // Callback executado a cada lote encontrado
+          totalResultsCount += newBatch.length;
           setResults(prev => [...prev, ...newBatch]);
         },
         searchCoords, // Passamos as coordenadas opcionais
@@ -218,12 +223,17 @@ const App: React.FC = () => {
       setSearchesRemaining(updatedLimit.remaining);
 
       // Save to search history
-      await searchHistoryService.saveSearch(segment, region, results.length);
+      await searchHistoryService.saveSearch(segment, region, totalResultsCount);
     } catch (err: any) {
-      setError(err.message || "Ocorreu um erro inesperado.");
+      const errorMessage = err?.message || "Ocorreu um erro inesperado.";
+      searchAborted = errorMessage.includes('interrompida pelo usuário');
+      setError(searchAborted ? null : errorMessage);
     } finally {
       setIsLoading(false);
-      setProgressMsg('');
+      if (!searchAborted) {
+        setProgressMsg('');
+      }
+      abortControllerRef.current = null;
     }
   }, [segment, region, maxResults, hasKey, isSweepMode, searchCoords]);
 
@@ -436,15 +446,16 @@ const App: React.FC = () => {
 
               {/* Button */}
               <button
-                type="submit"
-                disabled={isLoading || !region}
+                type={isLoading ? 'button' : 'submit'}
+                onClick={isLoading ? handleStopSearch : undefined}
+                disabled={!region}
                 className={`ml-0 md:ml-2 mt-2 md:mt-0 px-6 h-12 rounded-xl font-bold transition-all flex items-center justify-center gap-2 w-full md:w-auto whitespace-nowrap shadow-lg ${isSweepMode
                   ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20'
                   : 'bg-brand-600 hover:bg-brand-500 text-white shadow-brand-500/20'
                   } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 {isLoading ? (
-                  <div className="flex items-center gap-2" onClick={(e) => { e.preventDefault(); handleStopSearch(); }}>
+                  <div className="flex items-center gap-2">
                     <Loader2 className="animate-spin" size={20} />
                     <span>Parar</span>
                   </div>
