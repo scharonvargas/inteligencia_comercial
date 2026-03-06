@@ -130,6 +130,7 @@ const App: React.FC = () => {
 
   const handleSearch = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
     if (!region) return;
 
     // Persistir parâmetros
@@ -213,14 +214,27 @@ const App: React.FC = () => {
         controller.signal // Passamos o sinal de aborto
       );
 
+      if (controller.signal.aborted) {
+        throw new Error('Busca interrompida pelo usuário.');
+      }
+
       // Nota: fetchAndAnalyzeBusinesses retorna o array completo no final, 
       // mas já fomos atualizando o estado via callback, então não precisamos setar de novo aqui
       // a menos que queiramos garantir sincronia total.
 
       // Increment rate limit counter after successful search
       await rateLimitService.incrementSearchCount();
+
+      if (controller.signal.aborted) {
+        throw new Error('Busca interrompida pelo usuário.');
+      }
+
       const updatedLimit = await rateLimitService.getSearchCount();
       setSearchesRemaining(updatedLimit.remaining);
+
+      if (controller.signal.aborted) {
+        throw new Error('Busca interrompida pelo usuário.');
+      }
 
       // Save to search history
       await searchHistoryService.saveSearch(segment, region, totalResultsCount);
@@ -235,7 +249,7 @@ const App: React.FC = () => {
       }
       abortControllerRef.current = null;
     }
-  }, [segment, region, maxResults, hasKey, isSweepMode, searchCoords]);
+  }, [segment, region, maxResults, hasKey, isSweepMode, searchCoords, isLoading]);
 
   // Handler para atualizar o estágio no Kanban (e refletir na lista principal)
   const handlePipelineChange = useCallback(async (businessId: string, newStage: string) => {
