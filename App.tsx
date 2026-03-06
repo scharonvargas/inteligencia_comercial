@@ -87,6 +87,7 @@ const App: React.FC = () => {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
       setIsLoading(false);
+      setError(null);
       setProgressMsg("⚠️ Busca interrompida pelo usuário.");
     }
   }, []);
@@ -192,6 +193,7 @@ const App: React.FC = () => {
     setProgressMsg(initMsg);
 
     let totalResultsCount = 0;
+    let searchAborted = false;
 
     try {
       const searchSegment = isSweepMode ? "Varredura Geral (Multisetorial)" : segment;
@@ -223,10 +225,15 @@ const App: React.FC = () => {
       // Save to search history
       await searchHistoryService.saveSearch(segment, region, totalResultsCount);
     } catch (err: any) {
-      setError(err.message || "Ocorreu um erro inesperado.");
+      const errorMessage = err?.message || "Ocorreu um erro inesperado.";
+      searchAborted = errorMessage.includes('interrompida pelo usuário');
+      setError(searchAborted ? null : errorMessage);
     } finally {
       setIsLoading(false);
-      setProgressMsg('');
+      if (!searchAborted) {
+        setProgressMsg('');
+      }
+      abortControllerRef.current = null;
     }
   }, [segment, region, maxResults, hasKey, isSweepMode, searchCoords]);
 
